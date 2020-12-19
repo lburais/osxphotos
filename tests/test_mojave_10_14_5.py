@@ -1,6 +1,7 @@
 import pytest
 
-# TODO: put some of this code into a pre-function
+
+from osxphotos._constants import _UNKNOWN_PERSON
 
 PHOTOS_DB = "./tests/Test-10.14.5.photoslibrary/database/photos.db"
 KEYWORDS = [
@@ -14,7 +15,7 @@ KEYWORDS = [
     "UK",
     "United Kingdom",
 ]
-PERSONS = ["Katie", "Suzy", "Maria"]
+PERSONS = ["Katie", "Suzy", "Maria", _UNKNOWN_PERSON]
 ALBUMS = ["Pumpkin Farm"]
 KEYWORDS_DICT = {
     "Kids": 4,
@@ -27,7 +28,7 @@ KEYWORDS_DICT = {
     "UK": 1,
     "United Kingdom": 1,
 }
-PERSONS_DICT = {"Katie": 3, "Suzy": 2, "Maria": 1}
+PERSONS_DICT = {"Katie": 3, "Suzy": 2, "Maria": 1, _UNKNOWN_PERSON: 1}
 ALBUM_DICT = {"Pumpkin Farm": 3}
 
 
@@ -44,13 +45,6 @@ def test_db_version():
     photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
     # assert photosdb.db_version in osxphotos._TESTED_DB_VERSIONS
     assert photosdb.db_version == "4016"
-
-
-def test_os_version():
-    import osxphotos
-
-    (_, major, _) = osxphotos.utils._get_os_version()
-    assert major in osxphotos._constants._TESTED_OS_VERSIONS
 
 
 def test_persons():

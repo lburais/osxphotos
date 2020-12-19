@@ -12,14 +12,32 @@
 import datetime
 import locale
 import os
-import re
 import pathlib
+import re
+from functools import partial
 
 from ._constants import _UNKNOWN_PERSON
 from .datetime_formatter import DateTimeFormatter
+from .exiftool import ExifTool
+from .path_utils import sanitize_dirname, sanitize_filename, sanitize_pathpart
 
 # ensure locale set to user's locale
 locale.setlocale(locale.LC_ALL, "")
+
+PHOTO_VIDEO_TYPE_DEFAULTS = {"photo": "photo", "video": "video"}
+
+MEDIA_TYPE_DEFAULTS = {
+    "selfie": "selfie",
+    "time_lapse": "time_lapse",
+    "panorama": "panorama",
+    "slow_mo": "slow_mo",
+    "screenshot": "screenshot",
+    "portrait": "portrait",
+    "live_photo": "live_photo",
+    "burst": "burst",
+    "photo": "photo",
+    "video": "video",
+}
 
 # Permitted substitutions (each of these returns a single value or None)
 TEMPLATE_SUBSTITUTIONS = {
@@ -27,34 +45,43 @@ TEMPLATE_SUBSTITUTIONS = {
     "{original_name}": "Photo's original filename when imported to Photos",
     "{title}": "Title of the photo",
     "{descr}": "Description of the photo",
+    "{media_type}": (
+        f"Special media type resolved in this precedence: {', '.join(t for t in MEDIA_TYPE_DEFAULTS)}. "
+        "Defaults to 'photo' or 'video' if no special type. "
+        "Customize one or more media types using format: '{media_type,video=vidéo;time_lapse=vidéo_accélérée}'"
+    ),
+    "{photo_or_video}": "'photo' or 'video' depending on what type the image is. To customize, use default value as in '{photo_or_video,photo=fotos;video=videos}'",
+    "{hdr}": "Photo is HDR?; True/False value, use in format '{hdr?VALUE_IF_TRUE,VALUE_IF_FALSE}'",
+    "{edited}": "Photo has been edited (has adjustments)?; True/False value, use in format '{edited?VALUE_IF_TRUE,VALUE_IF_FALSE}'",
     "{created.date}": "Photo's creation date in ISO format, e.g. '2020-03-22'",
-    "{created.year}": "4-digit year of file creation time",
-    "{created.yy}": "2-digit year of file creation time",
-    "{created.mm}": "2-digit month of the file creation time (zero padded)",
-    "{created.month}": "Month name in user's locale of the file creation time",
-    "{created.mon}": "Month abbreviation in the user's locale of the file creation time",
-    "{created.dd}": "2-digit day of the month (zero padded) of file creation time",
-    "{created.dow}": "Day of week in user's locale of the file creation time",
-    "{created.doy}": "3-digit day of year (e.g Julian day) of file creation time, starting from 1 (zero padded)",
-    "{created.hour}": "2-digit hour of the file creation time",
-    "{created.min}": "2-digit minute of the file creation time",
-    "{created.sec}": "2-digit second of the file creation time",
+    "{created.year}": "4-digit year of photo creation time",
+    "{created.yy}": "2-digit year of photo creation time",
+    "{created.mm}": "2-digit month of the photo creation time (zero padded)",
+    "{created.month}": "Month name in user's locale of the photo creation time",
+    "{created.mon}": "Month abbreviation in the user's locale of the photo creation time",
+    "{created.dd}": "2-digit day of the month (zero padded) of photo creation time",
+    "{created.dow}": "Day of week in user's locale of the photo creation time",
+    "{created.doy}": "3-digit day of year (e.g Julian day) of photo creation time, starting from 1 (zero padded)",
+    "{created.hour}": "2-digit hour of the photo creation time",
+    "{created.min}": "2-digit minute of the photo creation time",
+    "{created.sec}": "2-digit second of the photo creation time",
     "{created.strftime}": "Apply strftime template to file creation date/time. Should be used in form "
     + "{created.strftime,TEMPLATE} where TEMPLATE is a valid strftime template, e.g. "
     + "{created.strftime,%Y-%U} would result in year-week number of year: '2020-23'. "
     + "If used with no template will return null value. "
     + "See https://strftime.org/ for help on strftime templates.",
     "{modified.date}": "Photo's modification date in ISO format, e.g. '2020-03-22'",
-    "{modified.year}": "4-digit year of file modification time",
-    "{modified.yy}": "2-digit year of file modification time",
-    "{modified.mm}": "2-digit month of the file modification time (zero padded)",
-    "{modified.month}": "Month name in user's locale of the file modification time",
-    "{modified.mon}": "Month abbreviation in the user's locale of the file modification time",
-    "{modified.dd}": "2-digit day of the month (zero padded) of the file modification time",
-    "{modified.doy}": "3-digit day of year (e.g Julian day) of file modification time, starting from 1 (zero padded)",
-    "{modified.hour}": "2-digit hour of the file modification time",
-    "{modified.min}": "2-digit minute of the file modification time",
-    "{modified.sec}": "2-digit second of the file modification time",
+    "{modified.year}": "4-digit year of photo modification time",
+    "{modified.yy}": "2-digit year of photo modification time",
+    "{modified.mm}": "2-digit month of the photo modification time (zero padded)",
+    "{modified.month}": "Month name in user's locale of the photo modification time",
+    "{modified.mon}": "Month abbreviation in the user's locale of the photo modification time",
+    "{modified.dd}": "2-digit day of the month (zero padded) of the photo modification time",
+    "{modified.dow}": "Day of week in user's locale of the photo modification time",
+    "{modified.doy}": "3-digit day of year (e.g Julian day) of photo modification time, starting from 1 (zero padded)",
+    "{modified.hour}": "2-digit hour of the photo modification time",
+    "{modified.min}": "2-digit minute of the photo modification time",
+    "{modified.sec}": "2-digit second of the photo modification time",
     # "{modified.strftime}": "Apply strftime template to file modification date/time. Should be used in form "
     # + "{modified.strftime,TEMPLATE} where TEMPLATE is a valid strftime template, e.g. "
     # + "{modified.strftime,%Y-%U} would result in year-week number of year: '2020-23'. "
@@ -100,6 +127,11 @@ TEMPLATE_SUBSTITUTIONS_MULTI_VALUED = {
     "{person}": "Person(s) / face(s) in a photo",
     "{label}": "Image categorization label associated with a photo (Photos 5 only)",
     "{label_normalized}": "All lower case version of 'label' (Photos 5 only)",
+    "{comment}": "Comment(s) on shared Photos; format is 'Person name: comment text' (Photos 5 only)",
+    "{exiftool:GROUP:TAGNAME}": "Use exiftool (https://exiftool.org) to extract metadata, in form GROUP:TAGNAME, from image.  "
+    "E.g. '{exiftool:EXIF:Make}' to get camera make, or {exiftool:IPTC:Keywords} to extract keywords. "
+    "See https://exiftool.org/TagNames/ for list of valid tag names.  You must specify group (e.g. EXIF, IPTC, etc) "
+    "as used in `exiftool -G`. exiftool must be installed in the path to use this template.",
 }
 
 # Just the multi-valued substitution names without the braces
@@ -124,6 +156,62 @@ class PhotoTemplate:
         # gets initialized in get_template_value
         self.today = None
 
+    def make_subst_function(
+        self, none_str, filename, dirname, replacement, get_func=None
+    ):
+        """ returns: substitution function for use in re.sub 
+            none_str: value to use if substitution lookup is None and no default provided
+            get_func: function that gets the substitution value for a given template field
+                    default is get_template_value which handles the single-value fields """
+
+        if get_func is None:
+            # used by make_subst_function to get the value for a template substitution
+            get_func = partial(
+                self.get_template_value,
+                filename=filename,
+                dirname=dirname,
+                replacement=replacement,
+            )
+
+        # closure to capture photo, none_str, filename, dirname in subst
+        def subst(matchobj):
+            groups = len(matchobj.groups())
+            if groups != 5:
+                raise ValueError(
+                    f"Unexpected number of groups: expected 4, got {groups}"
+                )
+
+            delim = matchobj.group(1)
+            field = matchobj.group(2)
+            path_sep = matchobj.group(3)
+            bool_val = matchobj.group(4)
+            default = matchobj.group(5)
+
+            # drop the '+' on delim
+            delim = delim[:-1] if delim is not None else None
+            # drop () from path_sep
+            path_sep = path_sep.strip("()") if path_sep is not None else None
+            # drop the ? on bool_val
+            bool_val = bool_val[1:] if bool_val is not None else None
+            # drop the comma on default
+            default_val = default[1:] if default is not None else None
+
+            try:
+                val = get_func(field, default_val, bool_val, delim, path_sep)
+            except ValueError:
+                return matchobj.group(0)
+
+            if val is None:
+                # field valid but didn't match a value
+                if default == ",":
+                    val = ""
+                else:
+                    val = default_val if default_val is not None else none_str
+
+            return val
+
+        return subst
+
     def render(
         self,
         template,
@@ -131,17 +219,23 @@ class PhotoTemplate:
         path_sep=None,
         expand_inplace=False,
         inplace_sep=None,
+        filename=False,
+        dirname=False,
+        replacement=":",
     ):
         """ Render a filename or directory template 
 
         Args:
             template: str template 
             none_str: str to use default for None values, default is '_' 
-            path_sep: optional character to use as path separator, default is os.path.sep
+            path_sep: optional string to use as path separator, default is os.path.sep
             expand_inplace: expand multi-valued substitutions in-place as a single string 
                 instead of returning individual strings
             inplace_sep: optional string to use as separator between multi-valued keywords
             with expand_inplace; default is ','
+            filename: if True, template output will be sanitized to produce valid file name
+            dirname: if True, template output will be sanitized to produce valid directory name 
+            replacement: str, value to replace any illegal file path characters with; default = ":"
 
         Returns:
             ([rendered_strings], [unmatched]): tuple of list of rendered strings and list of unmatched template values
@@ -149,8 +243,6 @@ class PhotoTemplate:
 
         if path_sep is None:
             path_sep = os.path.sep
-        elif path_sep is not None and len(path_sep) != 1:
-            raise ValueError(f"path_sep must be single character: {path_sep}")
 
         if inplace_sep is None:
             inplace_sep = ","
@@ -164,43 +256,21 @@ class PhotoTemplate:
         #          there would be 6 possible renderings (2 albums x 3 persons)
 
         # regex to find {template_field,optional_default} in strings
-        # for explanation of regex see https://regex101.com/r/4JJg42/1
         # pylint: disable=anomalous-backslash-in-string
-        regex = r"(?<!\{)\{([^\\,}]+)(,{0,1}(([\w\-\%. ]+))?)(?=\}(?!\}))\}"
+        regex = (
+            r"(?<!\{)\{"  # match { but not {{
+            + r"([^}]*\+)?"  # group 1: optional DELIM+
+            + r"([^\\,}+\?]+)"  # group 2: field name
+            + r"(\([^{}\)]*\))?"  # group 3: optional (PATH_SEP)
+            + r"(\?[^\\,}]*)?"  # group 4: optional ?TRUE_VALUE for boolean fields
+            + r"(,[\w\=\;\-\%. ]*)?"  # group 5: optional ,DEFAULT
+            + r"(?=\}(?!\}))\}"  # match } but not }}
+        )
+
         if type(template) is not str:
             raise TypeError(f"template must be type str, not {type(template)}")
 
-        def make_subst_function(self, none_str, get_func=self.get_template_value):
-            """ returns: substitution function for use in re.sub 
-                none_str: value to use if substitution lookup is None and no default provided
-                get_func: function that gets the substitution value for a given template field
-                        default is get_template_value which handles the single-value fields """
-
-            # closure to capture photo, none_str in subst
-            def subst(matchobj):
-                groups = len(matchobj.groups())
-                if groups == 4:
-                    try:
-                        val = get_func(matchobj.group(1), matchobj.group(3))
-                    except ValueError:
-                        return matchobj.group(0)
-
-                    if val is None:
-                        return (
-                            matchobj.group(3)
-                            if matchobj.group(3) is not None
-                            else none_str
-                        )
-                    else:
-                        return val
-                else:
-                    raise ValueError(
-                        f"Unexpected number of groups: expected 4, got {groups}"
-                    )
-
-            return subst
-
-        subst_func = make_subst_function(self, none_str)
+        subst_func = self.make_subst_function(none_str, filename, dirname, replacement)
 
         # do the replacements
         rendered = re.sub(regex, subst_func, template)
@@ -228,76 +298,37 @@ class PhotoTemplate:
         #    '2011/Album2/keyword1/person1',
         #    '2011/Album2/keyword2/person1',]
 
-        rendered_strings = set([rendered])
-        for field in MULTI_VALUE_SUBSTITUTIONS:
-            # Build a regex that matches only the field being processed
-            re_str = r"(?<!\\)\{(" + field + r")(,(([\w\-\%. ]{0,})))?\}"
-            regex_multi = re.compile(re_str)
+        rendered_strings = self._render_multi_valued_templates(
+            rendered,
+            none_str,
+            path_sep,
+            expand_inplace,
+            inplace_sep,
+            filename,
+            dirname,
+            replacement,
+        )
 
-            # holds each of the new rendered_strings, set() to avoid duplicates
-            new_strings = set()
-
-            for str_template in rendered_strings:
-                if regex_multi.search(str_template):
-                    values = self.get_template_value_multi(field, path_sep)
-                    if expand_inplace:
-                        # instead of returning multiple strings, join values into a single string
-                        val = (
-                            inplace_sep.join(sorted(values))
-                            if values and values[0]
-                            else None
-                        )
-
-                        def lookup_template_value_multi(lookup_value, default):
-                            """ Closure passed to make_subst_function get_func 
-                                    Capture val and field in the closure 
-                                    Allows make_subst_function to be re-used w/o modification
-                                    default is not used but required so signature matches get_template_value """
-                            if lookup_value == field:
-                                return val
-                            else:
-                                raise ValueError(f"Unexpected value: {lookup_value}")
-
-                        subst = make_subst_function(
-                            self, none_str, get_func=lookup_template_value_multi
-                        )
-                        new_string = regex_multi.sub(subst, str_template)
-
-                        # update rendered_strings for the next field to process
-                        rendered_strings = {new_string}
-                    else:
-                        # create a new template string for each value
-                        for val in values:
-
-                            def lookup_template_value_multi(lookup_value, default):
-                                """ Closure passed to make_subst_function get_func 
-                                    Capture val and field in the closure 
-                                    Allows make_subst_function to be re-used w/o modification
-                                    default is not used but required so signature matches get_template_value """
-                                if lookup_value == field:
-                                    return val
-                                else:
-                                    raise ValueError(
-                                        f"Unexpected value: {lookup_value}"
-                                    )
-
-                            subst = make_subst_function(
-                                self, none_str, get_func=lookup_template_value_multi
-                            )
-                            new_string = regex_multi.sub(subst, str_template)
-                            new_strings.add(new_string)
-
-                        # update rendered_strings for the next field to process
-                        rendered_strings = new_strings
+        # process exiftool: templates
+        rendered_strings = self._render_exiftool_template(
+            rendered_strings,
+            none_str,
+            path_sep,
+            expand_inplace,
+            inplace_sep,
+            filename,
+            dirname,
+            replacement,
+        )
 
         # find any {fields} that weren't replaced
         unmatched = []
         for rendered_str in rendered_strings:
             unmatched.extend(
                 [
-                    no_match[0]
+                    no_match[1]
                     for no_match in re.findall(regex, rendered_str)
-                    if no_match[0] not in unmatched
+                    if no_match[1] not in unmatched
                 ]
             )
 
@@ -307,14 +338,273 @@ class PhotoTemplate:
             for rendered_str in rendered_strings
         ]
 
+        if filename:
+            rendered_strings = [
+                sanitize_filename(rendered_str) for rendered_str in rendered_strings
+            ]
+
         return rendered_strings, unmatched
 
-    def get_template_value(self, field, default):
+    def _render_multi_valued_templates(
+        self,
+        rendered,
+        none_str,
+        path_sep,
+        expand_inplace,
+        inplace_sep,
+        filename,
+        dirname,
+        replacement,
+    ):
+        rendered_strings = [rendered]
+        new_rendered_strings = []
+        while new_rendered_strings != rendered_strings:
+            new_rendered_strings = rendered_strings
+            for field in MULTI_VALUE_SUBSTITUTIONS:
+                # Build a regex that matches only the field being processed
+                re_str = (
+                    r"(?<!\{)\{"  # match { but not {{
+                    + r"([^}]*\+)?"  # group 1: optional DELIM+
+                    + r"("
+                    + field  # group 2: field name
+                    + r")"
+                    + r"(\([^{}\)]*\))?"  # group 3: optional (PATH_SEP)
+                    + r"(\?[^\\,}]*)?"  # group 4: optional ?TRUE_VALUE for boolean fields
+                    + r"(,[\w\=\;\-\%. ]*)?"  # group 5: optional ,DEFAULT
+                    + r"(?=\}(?!\}))\}"  # match } but not }}
+                )
+                regex_multi = re.compile(re_str)
+
+                # holds each of the new rendered_strings, dict to avoid repeats (dict.keys())
+                new_strings = {}
+
+                for str_template in rendered_strings:
+                    matches = regex_multi.search(str_template)
+                    if matches:
+                        path_sep = (
+                            matches.group(3).strip("()")
+                            if matches.group(3) is not None
+                            else path_sep
+                        )
+                        values = self.get_template_value_multi(
+                            field,
+                            path_sep,
+                            filename=filename,
+                            dirname=dirname,
+                            replacement=replacement,
+                        )
+                        if expand_inplace or matches.group(1) is not None:
+                            delim = (
+                                matches.group(1)[:-1]
+                                if matches.group(1) is not None
+                                else inplace_sep
+                            )
+                            # instead of returning multiple strings, join values into a single string
+                            val = (
+                                delim.join(sorted(values))
+                                if values and values[0]
+                                else None
+                            )
+
+                            def lookup_template_value_multi(lookup_value, *_):
+                                """ Closure passed to make_subst_function get_func 
+                                        Capture val and field in the closure 
+                                        Allows make_subst_function to be re-used w/o modification
+                                        _ is not used but required so signature matches get_template_value """
+                                if lookup_value == field:
+                                    return val
+                                else:
+                                    raise ValueError(
+                                        f"Unexpected value: {lookup_value}"
+                                    )
+
+                            subst = self.make_subst_function(
+                                none_str,
+                                filename,
+                                dirname,
+                                replacement,
+                                get_func=lookup_template_value_multi,
+                            )
+                            new_string = regex_multi.sub(subst, str_template)
+
+                            # update rendered_strings for the next field to process
+                            rendered_strings = list({new_string})
+                        else:
+                            # create a new template string for each value
+                            for val in values:
+
+                                def lookup_template_value_multi(lookup_value, *_):
+                                    """ Closure passed to make_subst_function get_func 
+                                        Capture val and field in the closure 
+                                        Allows make_subst_function to be re-used w/o modification
+                                        _ is not used but required so signature matches get_template_value """
+                                    if lookup_value == field:
+                                        return val
+                                    else:
+                                        raise ValueError(
+                                            f"Unexpected value: {lookup_value}"
+                                        )
+
+                                subst = self.make_subst_function(
+                                    none_str,
+                                    filename,
+                                    dirname,
+                                    replacement,
+                                    get_func=lookup_template_value_multi,
+                                )
+                                new_string = regex_multi.sub(subst, str_template)
+                                new_strings[new_string] = 1
+
+                            # update rendered_strings for the next field to process
+                            rendered_strings = sorted(list(new_strings.keys()))
+        return rendered_strings
+
+    def _render_exiftool_template(
+        self,
+        rendered_strings,
+        none_str,
+        path_sep,
+        expand_inplace,
+        inplace_sep,
+        filename,
+        dirname,
+        replacement,
+    ):
+        # TODO: lots of code commonality with render_multi_valued_templates -- combine or pull out
+        # TODO: put these in globals
+        if path_sep is None:
+            path_sep = os.path.sep
+
+        if inplace_sep is None:
+            inplace_sep = ","
+
+        # Build a regex that matches only the field being processed
+        # todo: pull out regexes into globals?
+        re_str = (
+            r"(?<!\{)\{"  # match { but not {{
+            + r"([^}]*\+)?"  # group 1: optional DELIM+
+            + r"(exiftool:[^\\,}+\?]+)"  # group 3 field name
+            + r"(\([^{}\)]*\))?"  # group 3: optional (PATH_SEP)
+            + r"(\?[^\\,}]*)?"  # group 4: optional ?TRUE_VALUE for boolean fields
+            + r"(,[\w\=\;\-\%. ]*)?"  # group 5: optional ,DEFAULT
+            + r"(?=\}(?!\}))\}"  # match } but not }}
+        )
+        regex_multi = re.compile(re_str)
+
+        # holds each of the new rendered_strings, dict to avoid repeats (dict.keys())
+        new_rendered_strings = []
+        while new_rendered_strings != rendered_strings:
+            new_rendered_strings = rendered_strings
+            new_strings = {}
+            for str_template in rendered_strings:
+                matches = regex_multi.search(str_template)
+                if matches:
+                    # allmatches = regex_multi.finditer(str_template)
+                    # for matches in allmatches:
+                    path_sep = (
+                        matches.group(3).strip("()")
+                        if matches.group(3) is not None
+                        else path_sep
+                    )
+                    field = matches.group(2)
+                    subfield = field[9:]
+
+                    if not self.photo.path:
+                        values = [None]
+                    else:
+                        exif = ExifTool(self.photo.path)
+                        exifdict = exif.asdict()
+                        exifdict = {k.lower(): v for (k, v) in exifdict.items()}
+                        subfield = subfield.lower()
+                        if subfield in exifdict:
+                            values = exifdict[subfield]
+                            values = (
+                                [values] if not isinstance(values, list) else values
+                            )
+                        else:
+                            values = [None]
+                    if expand_inplace or matches.group(1) is not None:
+                        delim = (
+                            matches.group(1)[:-1]
+                            if matches.group(1) is not None
+                            else inplace_sep
+                        )
+                        # instead of returning multiple strings, join values into a single string
+                        val = (
+                            delim.join(sorted(values)) if values and values[0] else None
+                        )
+
+                        def lookup_template_value_exif(lookup_value, *_):
+                            """ Closure passed to make_subst_function get_func 
+                                    Capture val and field in the closure 
+                                    Allows make_subst_function to be re-used w/o modification
+                                    _ is not used but required so signature matches get_template_value """
+                            if lookup_value == field:
+                                return val
+                            else:
+                                raise ValueError(f"Unexpected value: {lookup_value}")
+
+                        subst = self.make_subst_function(
+                            none_str,
+                            filename,
+                            dirname,
+                            replacement,
+                            get_func=lookup_template_value_exif,
+                        )
+                        new_string = regex_multi.sub(subst, str_template)
+                        # update rendered_strings for the next field to process
+                        rendered_strings = list({new_string})
+                    else:
+                        # create a new template string for each value
+                        for val in values:
+
+                            def lookup_template_value_exif(lookup_value, *_):
+                                """ Closure passed to make_subst_function get_func 
+                                    Capture val and field in the closure 
+                                    Allows make_subst_function to be re-used w/o modification
+                                    _ is not used but required so signature matches get_template_value """
+                                if lookup_value == field:
+                                    return val
+                                else:
+                                    raise ValueError(
+                                        f"Unexpected value: {lookup_value}"
+                                    )
+
+                            subst = self.make_subst_function(
+                                none_str,
+                                filename,
+                                dirname,
+                                replacement,
+                                get_func=lookup_template_value_exif,
+                            )
+                            new_string = regex_multi.sub(subst, str_template)
+                            new_strings[new_string] = 1
+                        # update rendered_strings for the next field to process
+                        rendered_strings = sorted(list(new_strings.keys()))
+        return rendered_strings
+
+    def get_template_value(
+        self,
+        field,
+        default,
+        bool_val=None,
+        delim=None,
+        path_sep=None,
+        filename=False,
+        dirname=False,
+        replacement=":",
+    ):
         """lookup value for template field (single-value template substitutions)
 
         Args:
             field: template field to find value for.
             default: the default value provided by the user
+            bool_val: True value if expression is boolean 
+            delim: delimiter for expand in place
+            path_sep: path separator for fields that are path-like
+            filename: if True, template output will be sanitized to produce valid file name
+            dirname: if True, template output will be sanitized to produce valid directory name 
+            replacement: str, value to replace any illegal file path characters with; default = ":"
         
         Returns:
             The matching template value (which may be None).
@@ -327,289 +617,250 @@ class PhotoTemplate:
         if self.today is None:
             self.today = datetime.datetime.now()
 
-        # must be a valid keyword
+        value = None
+
+        # wouldn't a switch/case statement be nice...
         if field == "name":
-            return pathlib.Path(self.photo.filename).stem
-
-        if field == "original_name":
-            return pathlib.Path(self.photo.original_filename).stem
-
-        if field == "title":
-            return self.photo.title
-
-        if field == "descr":
-            return self.photo.description
-
-        if field == "created.date":
-            return DateTimeFormatter(self.photo.date).date
-
-        if field == "created.year":
-            return DateTimeFormatter(self.photo.date).year
-
-        if field == "created.yy":
-            return DateTimeFormatter(self.photo.date).yy
-
-        if field == "created.mm":
-            return DateTimeFormatter(self.photo.date).mm
-
-        if field == "created.month":
-            return DateTimeFormatter(self.photo.date).month
-
-        if field == "created.mon":
-            return DateTimeFormatter(self.photo.date).mon
-
-        if field == "created.dd":
-            return DateTimeFormatter(self.photo.date).dd
-
-        if field == "created.dow":
-            return DateTimeFormatter(self.photo.date).dow
-
-        if field == "created.doy":
-            return DateTimeFormatter(self.photo.date).doy
-
-        if field == "created.hour":
-            return DateTimeFormatter(self.photo.date).hour
-
-        if field == "created.min":
-            return DateTimeFormatter(self.photo.date).min
-
-        if field == "created.sec":
-            return DateTimeFormatter(self.photo.date).sec
-
-        if field == "created.strftime":
+            value = pathlib.Path(self.photo.filename).stem
+        elif field == "original_name":
+            value = pathlib.Path(self.photo.original_filename).stem
+        elif field == "title":
+            value = self.photo.title
+        elif field == "descr":
+            value = self.photo.description
+        elif field == "media_type":
+            value = self.get_media_type(default)
+        elif field == "photo_or_video":
+            value = self.get_photo_video_type(default)
+        elif field == "hdr":
+            value = self.get_photo_bool_attribute("hdr", default, bool_val)
+        elif field == "edited":
+            value = self.get_photo_bool_attribute("hasadjustments", default, bool_val)
+        elif field == "created.date":
+            value = DateTimeFormatter(self.photo.date).date
+        elif field == "created.year":
+            value = DateTimeFormatter(self.photo.date).year
+        elif field == "created.yy":
+            value = DateTimeFormatter(self.photo.date).yy
+        elif field == "created.mm":
+            value = DateTimeFormatter(self.photo.date).mm
+        elif field == "created.month":
+            value = DateTimeFormatter(self.photo.date).month
+        elif field == "created.mon":
+            value = DateTimeFormatter(self.photo.date).mon
+        elif field == "created.dd":
+            value = DateTimeFormatter(self.photo.date).dd
+        elif field == "created.dow":
+            value = DateTimeFormatter(self.photo.date).dow
+        elif field == "created.doy":
+            value = DateTimeFormatter(self.photo.date).doy
+        elif field == "created.hour":
+            value = DateTimeFormatter(self.photo.date).hour
+        elif field == "created.min":
+            value = DateTimeFormatter(self.photo.date).min
+        elif field == "created.sec":
+            value = DateTimeFormatter(self.photo.date).sec
+        elif field == "created.strftime":
             if default:
                 try:
-                    return self.photo.date.strftime(default)
+                    value = self.photo.date.strftime(default)
                 except:
                     raise ValueError(f"Invalid strftime template: '{default}'")
             else:
-                return None
-
-        if field == "modified.date":
-            return (
+                value = None
+        elif field == "modified.date":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).date
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.year":
-            return (
+        elif field == "modified.year":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).year
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.yy":
-            return (
+        elif field == "modified.yy":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).yy
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.mm":
-            return (
+        elif field == "modified.mm":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).mm
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.month":
-            return (
+        elif field == "modified.month":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).month
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.mon":
-            return (
+        elif field == "modified.mon":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).mon
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.dd":
-            return (
+        elif field == "modified.dd":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).dd
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.doy":
-            return (
+        elif field == "modified.dow":
+            value = (
+                DateTimeFormatter(self.photo.date_modified).dow
+                if self.photo.date_modified
+                else None
+            )
+        elif field == "modified.doy":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).doy
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.hour":
-            return (
+        elif field == "modified.hour":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).hour
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.min":
-            return (
+        elif field == "modified.min":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).min
                 if self.photo.date_modified
                 else None
             )
-
-        if field == "modified.sec":
-            return (
+        elif field == "modified.sec":
+            value = (
                 DateTimeFormatter(self.photo.date_modified).sec
                 if self.photo.date_modified
                 else None
             )
-
-        # TODO: disabling modified.strftime for now because now clean way to pass
-        # a default value if modified time is None
-        # if field == "modified.strftime":
-        #     if default and self.photo.date_modified:
-        #         try:
-        #             return self.photo.date_modified.strftime(default)
-        #         except:
-        #             raise ValueError(f"Invalid strftime template: '{default}'")
-        #     else:
-        #         return None
-
-        if field == "today.date":
-            return DateTimeFormatter(self.today).date
-
-        if field == "today.year":
-            return DateTimeFormatter(self.today).year
-
-        if field == "today.yy":
-            return DateTimeFormatter(self.today).yy
-
-        if field == "today.mm":
-            return DateTimeFormatter(self.today).mm
-
-        if field == "today.month":
-            return DateTimeFormatter(self.today).month
-
-        if field == "today.mon":
-            return DateTimeFormatter(self.today).mon
-
-        if field == "today.dd":
-            return DateTimeFormatter(self.today).dd
-
-        if field == "today.dow":
-            return DateTimeFormatter(self.today).dow
-
-        if field == "today.doy":
-            return DateTimeFormatter(self.today).doy
-
-        if field == "today.hour":
-            return DateTimeFormatter(self.today).hour
-
-        if field == "today.min":
-            return DateTimeFormatter(self.today).min
-
-        if field == "today.sec":
-            return DateTimeFormatter(self.today).sec
-
-        if field == "today.strftime":
+        elif field == "today.date":
+            value = DateTimeFormatter(self.today).date
+        elif field == "today.year":
+            value = DateTimeFormatter(self.today).year
+        elif field == "today.yy":
+            value = DateTimeFormatter(self.today).yy
+        elif field == "today.mm":
+            value = DateTimeFormatter(self.today).mm
+        elif field == "today.month":
+            value = DateTimeFormatter(self.today).month
+        elif field == "today.mon":
+            value = DateTimeFormatter(self.today).mon
+        elif field == "today.dd":
+            value = DateTimeFormatter(self.today).dd
+        elif field == "today.dow":
+            value = DateTimeFormatter(self.today).dow
+        elif field == "today.doy":
+            value = DateTimeFormatter(self.today).doy
+        elif field == "today.hour":
+            value = DateTimeFormatter(self.today).hour
+        elif field == "today.min":
+            value = DateTimeFormatter(self.today).min
+        elif field == "today.sec":
+            value = DateTimeFormatter(self.today).sec
+        elif field == "today.strftime":
             if default:
                 try:
-                    return self.today.strftime(default)
+                    value = self.today.strftime(default)
                 except:
                     raise ValueError(f"Invalid strftime template: '{default}'")
             else:
-                return None
-
-        if field == "place.name":
-            return self.photo.place.name if self.photo.place else None
-
-        if field == "place.country_code":
-            return self.photo.place.country_code if self.photo.place else None
-
-        if field == "place.name.country":
-            return (
+                value = None
+        elif field == "place.name":
+            value = self.photo.place.name if self.photo.place else None
+        elif field == "place.country_code":
+            value = self.photo.place.country_code if self.photo.place else None
+        elif field == "place.name.country":
+            value = (
                 self.photo.place.names.country[0]
                 if self.photo.place and self.photo.place.names.country
                 else None
             )
-
-        if field == "place.name.state_province":
-            return (
+        elif field == "place.name.state_province":
+            value = (
                 self.photo.place.names.state_province[0]
                 if self.photo.place and self.photo.place.names.state_province
                 else None
             )
-
-        if field == "place.name.city":
-            return (
+        elif field == "place.name.city":
+            value = (
                 self.photo.place.names.city[0]
                 if self.photo.place and self.photo.place.names.city
                 else None
             )
-
-        if field == "place.name.area_of_interest":
-            return (
+        elif field == "place.name.area_of_interest":
+            value = (
                 self.photo.place.names.area_of_interest[0]
                 if self.photo.place and self.photo.place.names.area_of_interest
                 else None
             )
-
-        if field == "place.address":
-            return (
+        elif field == "place.address":
+            value = (
                 self.photo.place.address_str
                 if self.photo.place and self.photo.place.address_str
                 else None
             )
-
-        if field == "place.address.street":
-            return (
+        elif field == "place.address.street":
+            value = (
                 self.photo.place.address.street
                 if self.photo.place and self.photo.place.address.street
                 else None
             )
-
-        if field == "place.address.city":
-            return (
+        elif field == "place.address.city":
+            value = (
                 self.photo.place.address.city
                 if self.photo.place and self.photo.place.address.city
                 else None
             )
-
-        if field == "place.address.state_province":
-            return (
+        elif field == "place.address.state_province":
+            value = (
                 self.photo.place.address.state_province
                 if self.photo.place and self.photo.place.address.state_province
                 else None
             )
-
-        if field == "place.address.postal_code":
-            return (
+        elif field == "place.address.postal_code":
+            value = (
                 self.photo.place.address.postal_code
                 if self.photo.place and self.photo.place.address.postal_code
                 else None
             )
-
-        if field == "place.address.country":
-            return (
+        elif field == "place.address.country":
+            value = (
                 self.photo.place.address.country
                 if self.photo.place and self.photo.place.address.country
                 else None
             )
-
-        if field == "place.address.country_code":
-            return (
+        elif field == "place.address.country_code":
+            value = (
                 self.photo.place.address.iso_country_code
                 if self.photo.place and self.photo.place.address.iso_country_code
                 else None
             )
+        else:
+            # if here, didn't get a match
+            raise ValueError(f"Unhandled template value: {field}")
 
-        # if here, didn't get a match
-        raise ValueError(f"Unhandled template value: {field}")
+        if filename:
+            value = sanitize_pathpart(value, replacement=replacement)
+        elif dirname:
+            value = sanitize_dirname(value, replacement=replacement)
+        return value
 
-    def get_template_value_multi(self, field, path_sep):
+    def get_template_value_multi(
+        self, field, path_sep, filename=False, dirname=False, replacement=":"
+    ):
         """lookup value for template field (multi-value template substitutions)
 
         Args:
             field: template field to find value for.
             path_sep: path separator to use for folder_album field
+            dirname: if True, values will be sanitized to be valid directory names; default = False
         
         Returns:
             List of the matching template values or [None].
@@ -619,6 +870,7 @@ class PhotoTemplate:
         """
 
         """ return list of values for a multi-valued template field """
+        values = []
         if field == "album":
             values = self.photo.albums
         elif field == "keyword":
@@ -637,15 +889,111 @@ class PhotoTemplate:
             for album in self.photo.album_info:
                 if album.folder_names:
                     # album in folder
-                    folder = path_sep.join(album.folder_names)
-                    folder += path_sep + album.title
+                    if dirname:
+                        # being used as a filepath so sanitize each part
+                        folder = path_sep.join(
+                            sanitize_dirname(f, replacement=replacement)
+                            for f in album.folder_names
+                        )
+                        folder += path_sep + sanitize_dirname(
+                            album.title, replacement=replacement
+                        )
+                    else:
+                        folder = path_sep.join(album.folder_names)
+                        folder += path_sep + album.title
                     values.append(folder)
                 else:
                     # album not in folder
-                    values.append(album.title)
-        else:
-            raise ValueError(f"Unhandleded template value: {field}")
+                    if dirname:
+                        values.append(
+                            sanitize_dirname(album.title, replacement=replacement)
+                        )
+                    else:
+                        values.append(album.title)
+        elif field == "comment":
+            values = [
+                f"{comment.user}: {comment.text}" for comment in self.photo.comments
+            ]
+        elif not field.startswith("exiftool:"):
+            raise ValueError(f"Unhandled template value: {field}")
+
+        # sanitize directory names if needed, folder_album handled differently above
+        if filename:
+            values = [
+                sanitize_pathpart(value, replacement=replacement) for value in values
+            ]
+        elif dirname and field != "folder_album":
+            # skip folder_album because it would have been handled above
+            values = [
+                sanitize_dirname(value, replacement=replacement) for value in values
+            ]
 
         # If no values, insert None so code below will substite none_str for None
         values = values or [None]
         return values
+
+    def get_photo_video_type(self, default):
+        """ return media type, e.g. photo or video """
+        default_dict = parse_default_kv(default, PHOTO_VIDEO_TYPE_DEFAULTS)
+        if self.photo.isphoto:
+            return default_dict["photo"]
+        else:
+            return default_dict["video"]
+
+    def get_media_type(self, default):
+        """ return special media type, e.g. slow_mo, panorama, etc., defaults to photo or video if no special type """
+        default_dict = parse_default_kv(default, MEDIA_TYPE_DEFAULTS)
+        p = self.photo
+        if p.selfie:
+            return default_dict["selfie"]
+        elif p.time_lapse:
+            return default_dict["time_lapse"]
+        elif p.panorama:
+            return default_dict["panorama"]
+        elif p.slow_mo:
+            return default_dict["slow_mo"]
+        elif p.screenshot:
+            return default_dict["screenshot"]
+        elif p.portrait:
+            return default_dict["portrait"]
+        elif p.live_photo:
+            return default_dict["live_photo"]
+        elif p.burst:
+            return default_dict["burst"]
+        elif p.ismovie:
+            return default_dict["video"]
+        else:
+            return default_dict["photo"]
+
+    def get_photo_bool_attribute(self, attr, default, bool_val):
+        # get value for a PhotoInfo bool attribute
+        val = getattr(self.photo, attr)
+        if val:
+            return bool_val
+        else:
+            return default
+
+
+def parse_default_kv(default, default_dict):
+    """ parse a string in form key1=value1;key2=value2,... as used for some template fields
+
+    Args:
+        default: str, in form 'photo=foto;video=vidéo'
+        default_dict: dict, in form {"photo": "fotos", "video": "vidéos"} with default values
+
+    Returns:
+        dict in form {"photo": "fotos", "video": "vidéos"}
+    """
+
+    default_dict_ = default_dict.copy()
+    if default:
+        defaults = default.split(";")
+        for kv in defaults:
+            try:
+                k, v = kv.split("=")
+                k = k.strip()
+                v = v.strip()
+                default_dict_[k] = v
+            except ValueError:
+                pass
+    return default_dict_

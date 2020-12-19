@@ -7,9 +7,9 @@ PHOTOS_DB = "tests/Test-10.15.5.photoslibrary/database/photos.db"
 PHOTOS_DB_PATH = "/Test-10.15.5.photoslibrary/database/photos.db"
 PHOTOS_LIBRARY_PATH = "/Test-10.15.5.photoslibrary"
 
-PHOTOS_DB_LEN = 14
+PHOTOS_DB_LEN = 15
 PHOTOS_NOT_IN_TRASH_LEN = 13
-PHOTOS_IN_TRASH_LEN = 1
+PHOTOS_IN_TRASH_LEN = 2
 
 KEYWORDS = [
     "Kids",
@@ -34,7 +34,7 @@ ALBUMS = [
 ]
 KEYWORDS_DICT = {
     "Kids": 4,
-    "wedding": 2,
+    "wedding": 3,
     "flowers": 1,
     "England": 1,
     "London": 1,
@@ -43,7 +43,7 @@ KEYWORDS_DICT = {
     "UK": 1,
     "United Kingdom": 1,
 }
-PERSONS_DICT = {"Katie": 3, "Suzy": 2, "Maria": 1, _UNKNOWN_PERSON: 1}
+PERSONS_DICT = {"Katie": 3, "Suzy": 2, "Maria": 2, _UNKNOWN_PERSON: 1}
 ALBUM_DICT = {
     "Pumpkin Farm": 3,
     "Test Album": 2,
@@ -71,6 +71,7 @@ UUID_DICT = {
     "date_invalid": "8846E3E6-8AC8-4857-8448-E3D025784410",
     "intrash": "71E3E212-00EB-430D-8A63-5E294B268554",
     "not_intrash": "DC99FBDD-7A52-4100-A5BB-344131646C30",
+    "intrash_person_keywords": "6FD38366-3BF2-407D-81FE-7153EB6125B6",
 }
 
 UUID_PUMPKIN_FARM = [
@@ -78,6 +79,13 @@ UUID_PUMPKIN_FARM = [
     "D79B8D77-BFFC-460B-9312-034F2877D35B",
     "1EB2B765-0765-43BA-A90C-0D0580E6172C",
 ]
+
+ALBUM_SORT_ORDER = [
+    "1EB2B765-0765-43BA-A90C-0D0580E6172C",
+    "F12384F6-CD17-4151-ACBA-AE0E3688539E",
+    "D79B8D77-BFFC-460B-9312-034F2877D35B",
+]
+ALBUM_KEY_PHOTO = "D79B8D77-BFFC-460B-9312-034F2877D35B"
 
 
 def test_init1():
@@ -156,13 +164,6 @@ def test_db_version():
     assert photosdb.db_version == "6000"
 
 
-def test_os_version():
-    import osxphotos
-
-    (_, major, _) = osxphotos.utils._get_os_version()
-    assert major in osxphotos._constants._TESTED_OS_VERSIONS
-
-
 def test_persons():
     import osxphotos
     import collections
@@ -195,7 +196,7 @@ def test_keywords_dict():
 
     photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
     keywords = photosdb.keywords_as_dict
-    assert keywords["wedding"] == 2
+    assert keywords["wedding"] == 3
     assert keywords == KEYWORDS_DICT
 
 
@@ -204,7 +205,7 @@ def test_persons_as_dict():
 
     photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
     persons = photosdb.persons_as_dict
-    assert persons["Maria"] == 1
+    assert persons["Maria"] == 2
     assert persons == PERSONS_DICT
 
 
@@ -215,6 +216,26 @@ def test_albums_as_dict():
     albums = photosdb.albums_as_dict
     assert albums["Pumpkin Farm"] == 3
     assert albums == ALBUM_DICT
+
+
+def test_album_sort_order():
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
+    album = [a for a in photosdb.album_info if a.title == "Pumpkin Farm"][0]
+    photos = album.photos
+
+    uuids = [p.uuid for p in photos]
+    assert uuids == ALBUM_SORT_ORDER
+
+
+def test_album_empty_album():
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
+    album = [a for a in photosdb.album_info if a.title == "EmptyAlbum"][0]
+    photos = album.photos
+    assert photos == []
 
 
 def test_attributes():
@@ -239,6 +260,46 @@ def test_attributes():
         "tests/Test-10.15.5.photoslibrary/originals/D/D79B8D77-BFFC-460B-9312-034F2877D35B.jpeg"
     )
     assert p.ismissing == False
+
+
+def test_attributes_2():
+    """ Test attributes including height, width, etc """
+    import datetime
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
+    photos = photosdb.photos(uuid=[UUID_DICT["has_adjustments"]])
+    assert len(photos) == 1
+    p = photos[0]
+    assert p.keywords == ["wedding"]
+    assert p.original_filename == "wedding.jpg"
+    assert p.filename == "E9BC5C36-7CD1-40A1-A72B-8B8FAC227D51.jpeg"
+    assert p.date == datetime.datetime(
+        2019,
+        4,
+        15,
+        14,
+        40,
+        24,
+        86000,
+        datetime.timezone(datetime.timedelta(seconds=-14400)),
+    )
+    assert p.description == "Bride Wedding day"
+    assert p.title is None
+    assert sorted(p.albums) == ["AlbumInFolder", "I have a deleted twin"]
+    assert p.persons == ["Maria"]
+    assert p.path.endswith(
+        "tests/Test-10.15.5.photoslibrary/originals/E/E9BC5C36-7CD1-40A1-A72B-8B8FAC227D51.jpeg"
+    )
+    assert not p.ismissing
+    assert p.hasadjustments
+    assert p.height == 1325
+    assert p.width == 1526
+    assert p.original_height == 1367
+    assert p.original_width == 2048
+    assert p.orientation == 1
+    assert p.original_orientation == 1
+    assert p.original_filesize == 460483
 
 
 def test_missing():
@@ -419,7 +480,7 @@ def test_photos_intrash_2():
         assert p.intrash
 
 
-def test_photos_intrash_2():
+def test_photos_intrash_3():
     """ test PhotosDB.photos(intrash=False) """
     import osxphotos
 
@@ -447,6 +508,39 @@ def test_photoinfo_intrash_2():
     assert not p
 
 
+def test_photoinfo_intrash_3():
+    """ Test PhotoInfo.intrash and photo has keyword and person """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
+    p = photosdb.photos(uuid=[UUID_DICT["intrash_person_keywords"]], intrash=True)[0]
+    assert p.intrash
+    assert "Maria" in p.persons
+    assert "wedding" in p.keywords
+
+
+def test_photoinfo_intrash_4():
+    """ Test PhotoInfo.intrash and photo has keyword and person """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
+    p = photosdb.photos(persons=["Maria"], intrash=True)[0]
+    assert p.intrash
+    assert "Maria" in p.persons
+    assert "wedding" in p.keywords
+
+
+def test_photoinfo_intrash_5():
+    """ Test PhotoInfo.intrash and photo has keyword and person """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
+    p = photosdb.photos(keywords=["wedding"], intrash=True)[0]
+    assert p.intrash
+    assert "Maria" in p.persons
+    assert "wedding" in p.keywords
+
+
 def test_photoinfo_not_intrash():
     """ Test PhotoInfo.intrash """
     import osxphotos
@@ -461,7 +555,7 @@ def test_keyword_2():
 
     photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB)
     photos = photosdb.photos(keywords=["wedding"])
-    assert len(photos) == 2
+    assert len(photos) == 2  # won't show the one in the trash
 
 
 def test_keyword_not_in_album():
@@ -485,6 +579,15 @@ def test_album_folder_name():
 
     photos = photosdb.photos(albums=["Pumpkin Farm"])
     assert sorted(p.uuid for p in photos) == sorted(UUID_PUMPKIN_FARM)
+
+
+def test_multi_person():
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(PHOTOS_DB)
+    photos = photosdb.photos(persons=["Katie", "Suzy"])
+
+    assert len(photos) == 3
 
 
 def test_get_db_path():
@@ -964,4 +1067,3 @@ def test_date_modified_invalid():
     assert len(photos) == 1
     p = photos[0]
     assert p.date_modified is None
-

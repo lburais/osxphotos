@@ -103,8 +103,68 @@ def test_setvalue_1():
 
     exif = osxphotos.exiftool.ExifTool(tempfile)
     exif.setvalue("IPTC:Keywords", "test")
+    assert not exif.error
+
     exif._read_exif()
     assert exif.data["IPTC:Keywords"] == "test"
+
+
+def test_setvalue_error():
+    # test setting illegal tag value generates error
+    import os.path
+    import tempfile
+    import osxphotos.exiftool
+    from osxphotos.fileutil import FileUtil
+
+    tempdir = tempfile.TemporaryDirectory(prefix="osxphotos_")
+    tempfile = os.path.join(tempdir.name, os.path.basename(TEST_FILE_ONE_KEYWORD))
+    FileUtil.copy(TEST_FILE_ONE_KEYWORD, tempfile)
+
+    exif = osxphotos.exiftool.ExifTool(tempfile)
+    exif.setvalue("IPTC:Foo", "test")
+    assert exif.error
+
+
+def test_setvalue_context_manager():
+    # test setting a tag value as context manager
+    import os.path
+    import tempfile
+    import osxphotos.exiftool
+    from osxphotos.fileutil import FileUtil
+
+    tempdir = tempfile.TemporaryDirectory(prefix="osxphotos_")
+    tempfile = os.path.join(tempdir.name, os.path.basename(TEST_FILE_ONE_KEYWORD))
+    FileUtil.copy(TEST_FILE_ONE_KEYWORD, tempfile)
+
+    with osxphotos.exiftool.ExifTool(tempfile) as exif:
+        exif.setvalue("IPTC:Keywords", "test1")
+        exif.setvalue("IPTC:Keywords", "test2")
+        exif.setvalue("XMP:Title", "title")
+        exif.setvalue("XMP:Subject", "subject")
+
+    assert exif.error is None
+
+    exif2 = osxphotos.exiftool.ExifTool(tempfile)
+    exif2._read_exif()
+    assert sorted(exif2.data["IPTC:Keywords"]) == ["test1", "test2"]
+    assert exif2.data["XMP:Title"] == "title"
+    assert exif2.data["XMP:Subject"] == "subject"
+
+
+def test_setvalue_context_manager_error():
+    # test setting a tag value as context manager when error generated
+    import os.path
+    import tempfile
+    import osxphotos.exiftool
+    from osxphotos.fileutil import FileUtil
+
+    tempdir = tempfile.TemporaryDirectory(prefix="osxphotos_")
+    tempfile = os.path.join(tempdir.name, os.path.basename(TEST_FILE_ONE_KEYWORD))
+    FileUtil.copy(TEST_FILE_ONE_KEYWORD, tempfile)
+
+    with osxphotos.exiftool.ExifTool(tempfile) as exif:
+        exif.setvalue("Foo:Bar", "test1")
+    assert exif.error
 
 
 def test_clear_value():
@@ -198,7 +258,7 @@ def test_as_dict():
     import osxphotos.exiftool
 
     exif1 = osxphotos.exiftool.ExifTool(TEST_FILE_ONE_KEYWORD)
-    exifdata = exif1.as_dict()
+    exifdata = exif1.asdict()
     assert exifdata["XMP:TagsList"] == "wedding"
 
 
@@ -227,7 +287,7 @@ def test_photoinfo_exiftool():
     for uuid in EXIF_UUID:
         photo = photosdb.photos(uuid=[uuid])[0]
         exiftool = photo.exiftool
-        exif_dict = exiftool.as_dict()
+        exif_dict = exiftool.asdict()
         for key, val in EXIF_UUID[uuid].items():
             assert exif_dict[key] == val
 

@@ -1,8 +1,10 @@
 # OSXPhotos
-
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/python/black)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-![Python package](https://github.com/RhetTbull/osxphotos/workflows/Python%20package/badge.svg)
+[![Python package](https://github.com/RhetTbull/osxphotos/workflows/Python%20package/badge.svg)](https://github.com/RhetTbull/osxphotos/workflows/Python%20package/badge.svg)
+<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
+[![All Contributors](https://img.shields.io/badge/all_contributors-12-orange.svg?style=flat-square)](#contributors-)
+<!-- ALL-CONTRIBUTORS-BADGE:END -->
 
 - [OSXPhotos](#osxphotos)
   * [What is osxphotos?](#what-is-osxphotos)
@@ -15,9 +17,15 @@
     + [PhotoInfo](#photoinfo)
     + [ExifInfo](#exifinfo)
     + [AlbumInfo](#albuminfo)
+    + [ImportInfo](#importinfo)
     + [FolderInfo](#folderinfo)
     + [PlaceInfo](#placeinfo)
     + [ScoreInfo](#scoreinfo)
+    + [PersonInfo](#personinfo)
+    + [FaceInfo](#faceinfo)
+    + [CommentInfo](#commentinfo)
+    + [LikeInfo](#likeinfo)
+    + [Raw Photos](#raw-photos)
     + [Template Substitutions](#template-substitutions)
     + [Utility Functions](#utility-functions)
   * [Examples](#examples)
@@ -35,11 +43,13 @@ OSXPhotos provides the ability to interact with and query Apple's Photos.app lib
 
 ## Supported operating systems
 
-Only works on MacOS (aka Mac OS X). Tested on MacOS 10.12.6 / Photos 2.0, 10.13.6 / Photos 3.0, MacOS 10.14.5, 10.14.6 / Photos 4.0, MacOS 10.15.1 - 10.15.5 / Photos 5.0. 
+Only works on MacOS (aka Mac OS X). Tested on MacOS 10.12.6 / Photos 2.0, 10.13.6 / Photos 3.0, MacOS 10.14.5, 10.14.6 / Photos 4.0, MacOS 10.15.1 - 10.15.7 / Photos 5.0.
 
-Requires python >= 3.8. You can probably get this to run with Python 3.6 or 3.7 (see notes [below](#Installation-instructions)) but only 3.8+ is officially supported. 
+Beta support for MacOS 10.16/MacOS 11 Big Sur Beta / Photos 6.0.  Not tested on M1 / Apple silicon Macs.
 
-This package will read Photos databases for any supported version on any supported OS version.  E.g. you can read a database created with Photos 4.0 on MacOS 10.14 on a machine running MacOS 10.12.
+Requires python >= 3.7. 
+
+This package will read Photos databases for any supported version on any supported OS version.  E.g. you can read a database created with Photos 5.0 on MacOS 10.15 on a machine running MacOS 10.12 and vice versa.
 
 
 ## Installation instructions
@@ -48,24 +58,27 @@ OSXPhotos uses setuptools, thus simply run:
 
 	python3 setup.py install
 
-If you're using python 3.6 or 3.7, you'll need to do this first to get around an issue with bpylist2:
-
-	pip install -r requirements.txt
-
-You can also install directly from [pypi](https://pypi.org/) but you must use python >= 3.8 to avoid an error with bpylist2.  The package currently works fine with python 3.6 or 3.7 but I know of no way to get `pip` to install the right dependencies. 
+You can also install directly from [pypi](https://pypi.org/project/osxphotos/):
 
     pip install osxphotos
-	
+
+I recommend you create a [virtual environment](https://docs.python.org/3/tutorial/venv.html) before installing osxphotos.
+
+If you aren't familiar with installing python applications, I recommend you install `osxphotos` with [pipx](https://github.com/pipxproject/pipx). If you use `pipx`, you will not need to create a virtual environment as `pipx` takes care of this. The easiest way to do this on a Mac is to use [homebrew](https://brew.sh/):
+
+- Open `Terminal` (search for `Terminal` in Spotlight or look in `Applications/Utilities`)
+- Install `homebrew` according to instructions at [https://brew.sh/](https://brew.sh/)
+- Type the following into Terminal: `brew install pipx`
+- Then type this: `pipx install osxphotos`
+- Now you should be able to run `osxphotos` by typing: `osxphotos`
+
+**WARNING** The git repo for this project is very large (> 1GB) because it contains multiple Photos libraries used for testing on different versions of MacOS.  If you just want to use the osxphotos package in your own code, I recommend you install the latest version from [PyPI](https://pypi.org/project/osxphotos/) which does not include all the test libraries. If you just want to use the command line utility, you can download a pre-built executable of the latest [release](https://github.com/RhetTbull/osxphotos/releases) or you can install via `pip` which also installs the command line app.  If you aren't comfortable with running python on your Mac, start with the pre-built executable or `pipx` as described above.
+
 ## Command Line Usage
 
 This package will install a command line utility called `osxphotos` that allows you to query the Photos database.  Alternatively, you can also run the command line utility like this: `python3 -m osxphotos`
 
-If you only care about the command line tool, you can download an executable of the latest [release](https://github.com/RhetTbull/osxphotos/releases).  Alternatively, I recommend installing with [pipx](https://github.com/pipxproject/pipx)
-
-After installing pipx:
-`pipx install osxphotos`
-
-Then you should be able to run `osxphotos` on the command line:
+After installing per instructions above, you should be able to run `osxphotos` on the command line:
 
 ```
 > osxphotos
@@ -106,12 +119,12 @@ Example: `osxphotos help export`
 Usage: osxphotos export [OPTIONS] [PHOTOS_LIBRARY]... DEST
 
   Export photos from the Photos database. Export path DEST is required.
-  Optionally, query the Photos database using 1 or more search options;  if
-  more than one option is provided, they are treated as "AND"  (e.g. search
+  Optionally, query the Photos database using 1 or more search options; if
+  more than one option is provided, they are treated as "AND" (e.g. search
   for photos matching all options). If no query options are provided, all
   photos will be exported. By default, all versions of all photos will be
   exported including edited versions, live photo movies, burst photos, and
-  associated RAW images.  See --skip-edited, --skip-live, --skip-bursts, and
+  associated raw images. See --skip-edited, --skip-live, --skip-bursts, and
   --skip-raw options to modify this behavior.
 
 Options:
@@ -140,6 +153,9 @@ Options:
                                   searches top level folders (e.g. does not
                                   look at subfolders)
   --uuid UUID                     Search for photos with UUID(s).
+  --uuid-from-file FILE           Search for photos with UUID(s) loaded from
+                                  FILE. Format is a single UUID per line.
+                                  Lines preceeded with # are ignored.
   --title TITLE                   Search for TITLE in title of photo.
   --no-title                      Search for photos with no title.
   --description DESC              Search for DESC in description of photo.
@@ -193,31 +209,50 @@ Options:
   --not-selfie                    Search for photos that are not selfies.
   --panorama                      Search for panorama photos.
   --not-panorama                  Search for photos that are not panoramas.
-  --has-raw                       Search for photos with both a jpeg and RAW
+  --has-raw                       Search for photos with both a jpeg and raw
                                   version
   --only-movies                   Search only for movies (default searches
                                   both images and movies).
   --only-photos                   Search only for photos/images (default
                                   searches both images and movies).
-  --from-date [%Y-%m-%d|%Y-%m-%dT%H:%M:%S|%Y-%m-%d %H:%M:%S]
-                                  Search by start item date, e.g.
-                                  2000-01-12T12:00:00 or 2000-12-31 (ISO 8601
-                                  w/o TZ).
-  --to-date [%Y-%m-%d|%Y-%m-%dT%H:%M:%S|%Y-%m-%d %H:%M:%S]
-                                  Search by end item date, e.g.
-                                  2000-01-12T12:00:00 or 2000-12-31 (ISO 8601
-                                  w/o TZ).
+  --from-date DATETIME            Search by start item date, e.g.
+                                  2000-01-12T12:00:00,
+                                  2001-01-12T12:00:00-07:00, or 2000-12-31
+                                  (ISO 8601).
+  --to-date DATETIME              Search by end item date, e.g.
+                                  2000-01-12T12:00:00,
+                                  2001-01-12T12:00:00-07:00, or 2000-12-31
+                                  (ISO 8601).
+  --has-comment                   Search for photos that have comments.
+  --no-comment                    Search for photos with no comments.
+  --has-likes                     Search for photos that have likes.
+  --no-likes                      Search for photos with no likes.
+  --missing                       Export only photos missing from the Photos
+                                  library; must be used with --download-
+                                  missing.
   --deleted                       Include photos from the 'Recently Deleted'
                                   folder.
   --deleted-only                  Include only photos from the 'Recently
                                   Deleted' folder.
   --update                        Only export new or updated files. See notes
                                   below on export and --update.
+  --ignore-signature              When used with --update, ignores file
+                                  signature when updating files. This is
+                                  useful if you have processed or edited
+                                  exported photos changing the file signature
+                                  (size & modification date). In this case,
+                                  --update would normally re-export the
+                                  processed files but with --ignore-signature,
+                                  files which exist in the export directory
+                                  will not be re-exported.
   --dry-run                       Dry run (test) the export but don't actually
-                                  export any files; most useful with --verbose
+                                  export any files; most useful with
+                                  --verbose.
   --export-as-hardlink            Hardlink files instead of copying them.
                                   Cannot be used with --exiftool which creates
                                   copies of the files with embedded EXIF data.
+  --touch-file                    Sets the file's modification time to match
+                                  photo date.
   --overwrite                     Overwrite existing files. Default behavior
                                   is to add (1), (2), etc to filename if file
                                   already exists. Use this with caution as it
@@ -228,15 +263,90 @@ Options:
                                   DEST/2019/12/20/photoname.jpg).
   --skip-edited                   Do not export edited version of photo if an
                                   edited version exists.
+  --skip-original-if-edited       Do not export original if there is an edited
+                                  version (exports only the edited version).
   --skip-bursts                   Do not export all associated burst images in
                                   the library if a photo is a burst photo.
   --skip-live                     Do not export the associated live video
                                   component of a live photo.
-  --skip-raw                      Do not export associated RAW images of a
-                                  RAW/jpeg pair.  Note: this does not skip RAW
-                                  photos if the RAW photo does not have an
-                                  associated jpeg image (e.g. the RAW file was
+  --skip-raw                      Do not export associated raw images of a
+                                  RAW+JPEG pair.  Note: this does not skip raw
+                                  photos if the raw photo does not have an
+                                  associated jpeg image (e.g. the raw file was
                                   imported to Photos without a jpeg preview).
+  --current-name                  Use photo's current filename instead of
+                                  original filename for export.  Note:
+                                  Starting with Photos 5, all photos are
+                                  renamed upon import.  By default, photos are
+                                  exported with the the original name they had
+                                  before import.
+  --convert-to-jpeg               Convert all non-jpeg images (e.g. raw, HEIC,
+                                  PNG, etc) to JPEG upon export.  Only works
+                                  if your Mac has a GPU.
+  --jpeg-quality FLOAT RANGE      Value in range 0.0 to 1.0 to use with
+                                  --convert-to-jpeg. A value of 1.0 specifies
+                                  best quality, a value of 0.0 specifies
+                                  maximum compression. Defaults to 1.0
+  --download-missing              Attempt to download missing photos from
+                                  iCloud. The current implementation uses
+                                  Applescript to interact with Photos to
+                                  export the photo which will force Photos to
+                                  download from iCloud if the photo does not
+                                  exist on disk.  This will be slow and will
+                                  require internet connection. This obviously
+                                  only works if the Photos library is synched
+                                  to iCloud.  Note: --download-missing does
+                                  not currently export all burst images; only
+                                  the primary photo will be exported--
+                                  associated burst images will be skipped.
+  --sidecar FORMAT                Create sidecar for each photo exported;
+                                  valid FORMAT values: xmp, json; --sidecar
+                                  json: create JSON sidecar useable by
+                                  exiftool (https://exiftool.org/) The sidecar
+                                  file can be used to apply metadata to the
+                                  file with exiftool, for example: "exiftool
+                                  -j=photoname.jpg.json photoname.jpg" The
+                                  sidecar file is named in format
+                                  photoname.ext.json  --sidecar xmp: create
+                                  XMP sidecar used by Adobe Lightroom, etc.The
+                                  sidecar file is named in format
+                                  photoname.ext.xmpThe XMP sidecar exports the
+                                  following tags: Description, Title,
+                                  Keywords/Tags, Subject (set to Keywords +
+                                  PersonInImage), PersonInImage, CreateDate,
+                                  ModifyDate, GPSLongitude. For a list of tags
+                                  exported in the JSON sidecar, see
+                                  --exiftool.
+  --exiftool                      Use exiftool to write metadata directly to
+                                  exported photos. To use this option,
+                                  exiftool must be installed and in the path.
+                                  exiftool may be installed from
+                                  https://exiftool.org/.  Cannot be used with
+                                  --export-as-hardlink.  Writes the following
+                                  metadata: EXIF:ImageDescription,
+                                  XMP:Description (see also --description-
+                                  template); XMP:Title; XMP:TagsList,
+                                  IPTC:Keywords (see also --keyword-template,
+                                  --person-keyword, --album-keyword);
+                                  XMP:Subject (set to keywords + person in
+                                  image to mirror Photos' behavior);
+                                  XMP:PersonInImage; EXIF:GPSLatitudeRef;
+                                  EXIF:GPSLongitudeRef; EXIF:GPSLatitude;
+                                  EXIF:GPSLongitude; EXIF:GPSPosition;
+                                  EXIF:DateTimeOriginal;
+                                  EXIF:OffsetTimeOriginal; EXIF:ModifyDate
+                                  (see --ignore-date-modified);
+                                  IPTC:DateCreated; IPTC:TimeCreated; (video
+                                  files only): QuickTime:CreationDate;
+                                  QuickTime:CreateDate; QuickTime:ModifyDate
+                                  (see also --ignore-date-modified);
+                                  QuickTime:GPSCoordinates;
+                                  UserData:GPSCoordinates.
+  --ignore-date-modified          If used with --exiftool or --sidecar, will
+                                  ignore the photo modification date and set
+                                  EXIF:ModifyDate to EXIF:DateTimeOriginal;
+                                  this is consistent with how Photos handles
+                                  the EXIF:ModifyDate tag.
   --person-keyword                Use person in image as keyword/tag when
                                   exporting metadata.
   --album-keyword                 Use album name as keyword/tag when exporting
@@ -263,41 +373,6 @@ Options:
                                   could specify --description-template
                                   "{descr} exported with osxphotos on
                                   {today.date}" See Templating System below.
-  --current-name                  Use photo's current filename instead of
-                                  original filename for export.  Note:
-                                  Starting with Photos 5, all photos are
-                                  renamed upon import.  By default, photos are
-                                  exported with the the original name they had
-                                  before import.
-  --sidecar FORMAT                Create sidecar for each photo exported;
-                                  valid FORMAT values: xmp, json; --sidecar
-                                  json: create JSON sidecar useable by
-                                  exiftool (https://exiftool.org/) The sidecar
-                                  file can be used to apply metadata to the
-                                  file with exiftool, for example: "exiftool
-                                  -j=photoname.json photoname.jpg" The sidecar
-                                  file is named in format photoname.json
-                                  --sidecar xmp: create XMP sidecar used by
-                                  Adobe Lightroom, etc.The sidecar file is
-                                  named in format photoname.xmp
-  --download-missing              Attempt to download missing photos from
-                                  iCloud. The current implementation uses
-                                  Applescript to interact with Photos to
-                                  export the photo which will force Photos to
-                                  download from iCloud if the photo does not
-                                  exist on disk.  This will be slow and will
-                                  require internet connection. This obviously
-                                  only works if the Photos library is synched
-                                  to iCloud.  Note: --download-missing does
-                                  not currently export all burst images; only
-                                  the primary photo will be exported--
-                                  associated burst images will be skipped.
-  --exiftool                      Use exiftool to write metadata directly to
-                                  exported photos. To use this option,
-                                  exiftool must be installed and in the path.
-                                  exiftool may be installed from
-                                  https://exiftool.org/.  Cannot be used with
-                                  --export-as-hardlink.
   --directory DIRECTORY           Optional template for specifying name of
                                   output directory in the form
                                   '{name,DEFAULT}'. See below for additional
@@ -308,18 +383,57 @@ Options:
                                   do not include an extension in the FILENAME
                                   template. See below for additional details
                                   on templating system.
-  --edited-suffix SUFFIX          Optional suffix for naming edited photos.
-                                  Default name for edited photos is in form
-                                  'photoname_edited.ext'. For example, with '
-                                  --edited-suffix _bearbeiten', the edited
-                                  photo would be named
+  --edited-suffix SUFFIX          Optional suffix template for naming edited
+                                  photos.  Default name for edited photos is
+                                  in form 'photoname_edited.ext'. For example,
+                                  with '--edited-suffix _bearbeiten', the
+                                  edited photo would be named
                                   'photoname_bearbeiten.ext'.  The default
-                                  suffix is '_edited'.
-  --no-extended-attributes        Don't copy extended attributes when
-                                  exporting.  You only need this if exporting
-                                  to a filesystem that doesn't support Mac OS
-                                  extended attributes.  Only use this if you
-                                  get an error while exporting.
+                                  suffix is '_edited'. Multi-value templates
+                                  (see Templating System) are not permitted
+                                  with --edited-suffix.
+  --original-suffix SUFFIX        Optional suffix template for naming original
+                                  photos.  Default name for original photos is
+                                  in form 'filename.ext'. For example, with '
+                                  --original-suffix _original', the original
+                                  photo would be named
+                                  'filename_original.ext'.  The default suffix
+                                  is '' (no suffix). Multi-value templates
+                                  (see Templating System) are not permitted
+                                  with --original-suffix.
+  --use-photos-export             Force the use of AppleScript or PhotoKit to
+                                  export even if not missing (see also '--
+                                  download-missing' and '--use-photokit').
+  --use-photokit                  Use with '--download-missing' or '--use-
+                                  photos-export' to use direct Photos
+                                  interface instead of AppleScript to export.
+                                  Highly experimental alpha feature; does not
+                                  work with iTerm2 (use with Terminal.app).
+                                  This is faster and more reliable than the
+                                  default AppleScript interface.
+  --report <path to export report>
+                                  Write a CSV formatted report of all files
+                                  that were exported.
+  --cleanup                       Cleanup export directory by deleting any
+                                  files which were not included in this export
+                                  set. For example, photos which had
+                                  previously been exported and were
+                                  subsequently deleted in Photos.
+  --load-config <config file path>
+                                  Load options from file as written with
+                                  --save-config. This allows you to save a
+                                  complex export command to file for later
+                                  reuse. For example: 'osxphotos export <lots
+                                  of options here> --save-config
+                                  osxphotos.toml' then  'osxphotos export
+                                  /path/to/export --load-config
+                                  osxphotos.toml'. If any other command line
+                                  options are used in conjunction with --load-
+                                  config, they will override the corresponding
+                                  values in the config file.
+  --save-config <config file path>
+                                  Save options to file for use with --load-
+                                  config. File format is TOML.
   -h, --help                      Show this message and exit.
 
 ** Export **
@@ -334,10 +448,13 @@ the export folder.  If a file is changed in the export folder (for example,
 you edited the exported image), osxphotos will detect this as a difference and
 re-export the original image from the library thus overwriting the changes.
 If using --update, the exported library should be treated as a backup, not a
-working copy where you intend to make changes.
+working copy where you intend to make changes. If you do edit or process the
+exported files and do not want them to be overwritten withsubsequent --update,
+use --ignore-signature which will match filename but not file signature when
+exporting.
 
 Note: The number of files reported for export and the number actually exported
-may differ due to live photos, associated RAW images, and edited photos which
+may differ due to live photos, associated raw images, and edited photos which
 are reported in the total photos exported.
 
 Implementation note: To determine which files need to be updated, osxphotos
@@ -352,16 +469,76 @@ option to re-export the entire library thus rebuilding the
 
 ** Templating System **
 
+Several options, such as --directory, allow you to specify a template  which
+will be rendered to substitute template fields with values from the photo.
+For example, '{created.month}' would be replaced with the month name of the
+photo creation date.  e.g. 'November'.
+
+Some options supporting templates may be repeated e.g., --keyword-template
+'{label}'  --keyword-template '{media_type}' to add both labels and media
+types to the  keywords.
+
+The general format for a template is '{TEMPLATE_FIELD[,[DEFAULT]]}'.  Some
+templates have optional modifiers in form
+'{[[DELIM]+]TEMPLATE_FIELD[(PATH_SEP)][?VALUE_IF_TRUE][,[DEFAULT]]}'
+
+The ',' and DEFAULT value are optional.  If TEMPLATE_FIELD results in a null
+(empty) value, the default is '_'.   You may specify an alternate default
+value by appending ',DEFAULT' after template_field.  e.g. '{title,no_title}'
+would result in 'no_title' if the photo had no title.  You may include other
+text in the template string outside the {} and use more than  one template
+field, e.g. '{created.year} - {created.month}' (e.g. '2020 - November').
+
+Some template fields such as 'hdr' are boolean and resolve to True or False.
+These take the form: '{TEMPLATE_FIELD?VALUE_IF_TRUE,VALUE_IF_FALSE}', e.g.
+{hdr?is_hdr,not_hdr} which would result in 'is_hdr' if photo is an HDR  image
+and 'not_hdr' otherwise.
+
+Some template fields such as 'folder_template' are "path-like" in that they
+join  multiple elements into a single path-like string.  For example, if photo
+is in  album Album1 in folder Folder1, '{folder_album}` results in
+'Folder1/Album1'.  This is so these template fields may be used as paths in
+--directory.  If you intend to use such a field as a string, e.g. in the
+filename, you may specify  a different path separator using the form:
+'{TEMPLATE_FIELD(PATH_SEP)}'.  For example, using the example above,
+'{folder_album(-)}' would result in  'Folder1-Album1' and '{folder_album()}'
+would result in  'Folder1Album1'.
+
+Some templates may resolve to more than one value.  For example, a photo can
+have  multiple keywords so '{keyword}' can result in multiple values.  If used
+in a filename  or directory, these templates may result in more than one copy
+of the photo being exported.  For example, if photo has keywords "foo" and
+"bar", --directory '{keyword}' will result in  copies of the photo being
+exported to 'foo/image_name.jpeg' and 'bar/image_name.jpeg'.
+
+Multi-value template fields such as '{keyword}' may be expanded 'in place'
+with an optional delimiter using the template form '{DELIM+TEMPLATE_FIELD}'.
+For example, a photo with  keywords 'foo' and 'bar':
+
+'{keyword}' renders to 'foo' and 'bar'
+
+'{,+keyword}' renders to: 'foo,bar'
+
+'{; +keyword}' renders to: 'foo; bar'
+
+'{+keyword}' renders to 'foobar'
+
+Some template fields such as '{media_type}' use the 'DEFAULT' value to allow
+customization  of the output. For example, '{media_type}' resolves to the
+special media type of the  photo such as 'panorama' or 'selfie'.  You may use
+the 'DEFAULT' value to override  these in form:
+'{media_type,video=vidéo;time_lapse=vidéo_accélérée}'.  In this example, if
+photo is a time_lapse photo, 'media_type' would resolve to  'vidéo_accélérée'
+instead of 'time_lapse' and video would resolve to 'vidéo' if photo is an
+ordinary video.
+
 With the --directory and --filename options you may specify a template for the
 export directory or filename, respectively. The directory will be appended to
 the export path specified in the export DEST argument to export.  For example,
-if template is '{created.year}/{created.month}', and export desitnation DEST
+if template is '{created.year}/{created.month}', and export destination DEST
 is '/Users/maria/Pictures/export', the actual export directory for a photo
 would be '/Users/maria/Pictures/export/2020/March' if the photo was created in
-March 2020. Some template substitutions may result in more than one value, for
-example '{album}' if photo is in more than one album or '{keyword}' if photo
-has more than one keyword. In this case, more than one copy of the photo will
-be exported, each in a separate directory or with a different filename.
+March 2020.
 
 The templating system may also be used with the --keyword-template option to
 set keywords on export (with --exiftool or --sidecar), for example, to set a
@@ -390,31 +567,51 @@ value, '_' (underscore) will be used as the default value. For example, in the
 above example, this would result in '2020/_/photoname.jpg' if address was
 null.
 
+You may specify a null default (e.g. "" or empty string) by omitting the value
+after the comma, e.g. {title,} which would render to "" if title had no value.
+
 Substitution                    Description
 {name}                          Current filename of the photo
 {original_name}                 Photo's original filename when imported to
                                 Photos
 {title}                         Title of the photo
 {descr}                         Description of the photo
+{media_type}                    Special media type resolved in this
+                                precedence: selfie, time_lapse, panorama,
+                                slow_mo, screenshot, portrait, live_photo,
+                                burst, photo, video. Defaults to 'photo' or
+                                'video' if no special type. Customize one or
+                                more media types using format: '{media_type,
+                                video=vidéo;time_lapse=vidéo_accélérée}'
+{photo_or_video}                'photo' or 'video' depending on what type
+                                the image is. To customize, use default
+                                value as in
+                                '{photo_or_video,photo=fotos;video=videos}'
+{hdr}                           Photo is HDR?; True/False value, use in
+                                format '{hdr?VALUE_IF_TRUE,VALUE_IF_FALSE}'
+{edited}                        Photo has been edited (has adjustments)?;
+                                True/False value, use in format
+                                '{edited?VALUE_IF_TRUE,VALUE_IF_FALSE}'
 {created.date}                  Photo's creation date in ISO format, e.g.
                                 '2020-03-22'
-{created.year}                  4-digit year of file creation time
-{created.yy}                    2-digit year of file creation time
-{created.mm}                    2-digit month of the file creation time
+{created.year}                  4-digit year of photo creation time
+{created.yy}                    2-digit year of photo creation time
+{created.mm}                    2-digit month of the photo creation time
                                 (zero padded)
-{created.month}                 Month name in user's locale of the file
+{created.month}                 Month name in user's locale of the photo
                                 creation time
 {created.mon}                   Month abbreviation in the user's locale of
-                                the file creation time
+                                the photo creation time
 {created.dd}                    2-digit day of the month (zero padded) of
-                                file creation time
-{created.dow}                   Day of week in user's locale of the file
+                                photo creation time
+{created.dow}                   Day of week in user's locale of the photo
                                 creation time
-{created.doy}                   3-digit day of year (e.g Julian day) of file
-                                creation time, starting from 1 (zero padded)
-{created.hour}                  2-digit hour of the file creation time
-{created.min}                   2-digit minute of the file creation time
-{created.sec}                   2-digit second of the file creation time
+{created.doy}                   3-digit day of year (e.g Julian day) of
+                                photo creation time, starting from 1 (zero
+                                padded)
+{created.hour}                  2-digit hour of the photo creation time
+{created.min}                   2-digit minute of the photo creation time
+{created.sec}                   2-digit second of the photo creation time
 {created.strftime}              Apply strftime template to file creation
                                 date/time. Should be used in form
                                 {created.strftime,TEMPLATE} where TEMPLATE
@@ -426,22 +623,26 @@ Substitution                    Description
                                 templates.
 {modified.date}                 Photo's modification date in ISO format,
                                 e.g. '2020-03-22'
-{modified.year}                 4-digit year of file modification time
-{modified.yy}                   2-digit year of file modification time
-{modified.mm}                   2-digit month of the file modification time
+{modified.year}                 4-digit year of photo modification time
+{modified.yy}                   2-digit year of photo modification time
+{modified.mm}                   2-digit month of the photo modification time
                                 (zero padded)
-{modified.month}                Month name in user's locale of the file
+{modified.month}                Month name in user's locale of the photo
                                 modification time
 {modified.mon}                  Month abbreviation in the user's locale of
-                                the file modification time
+                                the photo modification time
 {modified.dd}                   2-digit day of the month (zero padded) of
-                                the file modification time
-{modified.doy}                  3-digit day of year (e.g Julian day) of file
-                                modification time, starting from 1 (zero
-                                padded)
-{modified.hour}                 2-digit hour of the file modification time
-{modified.min}                  2-digit minute of the file modification time
-{modified.sec}                  2-digit second of the file modification time
+                                the photo modification time
+{modified.dow}                  Day of week in user's locale of the photo
+                                modification time
+{modified.doy}                  3-digit day of year (e.g Julian day) of
+                                photo modification time, starting from 1
+                                (zero padded)
+{modified.hour}                 2-digit hour of the photo modification time
+{modified.min}                  2-digit minute of the photo modification
+                                time
+{modified.sec}                  2-digit second of the photo modification
+                                time
 {today.date}                    Current date in iso format, e.g.
                                 '2020-03-22'
 {today.year}                    4-digit year of current date
@@ -506,16 +707,26 @@ exported, one to each directory.  For example: --directory
 of the following directories if the photos were created in 2019 and were in
 albums 'Vacation' and 'Family': 2019/Vacation, 2019/Family
 
-Substitution        Description
-{album}             Album(s) photo is contained in
-{folder_album}      Folder path + album photo is contained in. e.g.
-                    'Folder/Subfolder/Album' or just 'Album' if no enclosing
-                    folder
-{keyword}           Keyword(s) assigned to photo
-{person}            Person(s) / face(s) in a photo
-{label}             Image categorization label associated with a photo
-                    (Photos 5 only)
-{label_normalized}  All lower case version of 'label' (Photos 5 only)
+Substitution              Description
+{album}                   Album(s) photo is contained in
+{folder_album}            Folder path + album photo is contained in. e.g.
+                          'Folder/Subfolder/Album' or just 'Album' if no
+                          enclosing folder
+{keyword}                 Keyword(s) assigned to photo
+{person}                  Person(s) / face(s) in a photo
+{label}                   Image categorization label associated with a photo
+                          (Photos 5 only)
+{label_normalized}        All lower case version of 'label' (Photos 5 only)
+{comment}                 Comment(s) on shared Photos; format is 'Person
+                          name: comment text' (Photos 5 only)
+{exiftool:GROUP:TAGNAME}  Use exiftool (https://exiftool.org) to extract
+                          metadata, in form GROUP:TAGNAME, from image.  E.g.
+                          '{exiftool:EXIF:Make}' to get camera make, or
+                          {exiftool:IPTC:Keywords} to extract keywords. See
+                          https://exiftool.org/TagNames/ for list of valid
+                          tag names.  You must specify group (e.g. EXIF,
+                          IPTC, etc) as used in `exiftool -G`. exiftool must
+                          be installed in the path to use this template.
 ```
 
 Example: export all photos to ~/Desktop/export group in folders by date created
@@ -533,6 +744,10 @@ Example: find all photos with keyword "Kids" and output results to json file nam
 Example: export photos to file structure based on 4-digit year and full name of month of photo's creation date:
 
 `osxphotos export ~/Desktop/export --directory "{created.year}/{created.month}"`
+
+Example: export photos to file structure based on 4-digit year of photo's creation date and add keywords for media type and labels (labels are only awailable on Photos 5 and higher):
+
+`osxphotos export ~/Desktop/export --directory "{created.year}" --keyword-template "{label}" --keyword-template "{media_type}"` 
 
 Example: export default library using 'country name/year' as output directory (but use "NoCountry/year" if country not specified), add persons, album names, and year as keywords, write exif metadata to files when exporting, update only changed files, print verbose ouput
 
@@ -667,18 +882,18 @@ if __name__ == "__main__":
 #### Read a Photos library database
 
 ```python
-osxphotos.PhotosDB() # not recommended, see Note below
+osxphotos.PhotosDB()
 osxphotos.PhotosDB(path)
 osxphotos.PhotosDB(dbfile=path)
 ```
 
 Reads the Photos library database and returns a PhotosDB object.  
 
-Pass the path to a Photos library or to a specific database file (e.g. "/Users/smith/Pictures/Photos Library.photoslibrary" or "/Users/smith/Pictures/Photos Library.photoslibrary/database/photos.db").  Normally, it's recommended you pass the path the .photoslibrary folder, not the actual database path.  The latter option is provided for debugging -- e.g. for reading a database file if you don't have the entire library. Path to photos library may be passed **either** as first argument **or** as named argument `dbfile`. **Note**: In Photos, users may specify a different library to open by holding down the *option* key while opening Photos.app. See also [get_last_library_path](#get_last_library_path) and [get_system_library_path](#get_system_library_path)
+Pass the path to a Photos library or to a specific database file (e.g. "/Users/smith/Pictures/Photos Library.photoslibrary" or "/Users/smith/Pictures/Photos Library.photoslibrary/database/photos.db").  Normally, it's recommended you pass the path the .photoslibrary folder, not the actual database path.  **Note**: In Photos, users may specify a different library to open by holding down the *option* key while opening Photos.app. See also [get_last_library_path](#get_last_library_path) and [get_system_library_path](#get_system_library_path)
 
 If an invalid path is passed, PhotosDB will raise `FileNotFoundError` exception.
 
-**Note**: If neither path or dbfile is passed, PhotosDB will use get_last_library_path to open the last opened Photos library.  This usually works but is not 100% reliable.  It can also lead to loading a different library than expected if the user has held down *option* key when opening Photos to switch libraries.  It is therefore recommended you explicitely pass the path to `PhotosDB()`.  
+**Note**: If neither path or dbfile is passed, PhotosDB will use get_last_library_path to open the last opened Photos library.  This usually works but is not 100% reliable.  It can also lead to loading a different library than expected if the user has held down *option* key when opening Photos to switch libraries.  You may therefore want to explicitely pass the path to `PhotosDB()`. 
 
 #### Open the default (last opened) Photos library
 
@@ -764,6 +979,10 @@ Returns list of shared album names found in photos database (e.g. albums shared 
 
 **Note**: *Only valid for Photos 5 / MacOS 10.15*; on Photos <= 4, prints warning and returns empty list.
 
+#### `import_info`
+
+Returns a list of [ImportInfo](#importinfo) objects representing the import sessions for the database.
+
 #### `folder_info`
 ```python
 # assumes photosdb is a PhotosDB object (see above)
@@ -790,7 +1009,15 @@ Returns a list names of top level folder names in the database.
 persons = photosdb.persons
 ```
 
-Returns a list of the persons (faces) found in the Photos library
+Returns a list of the person names (faces) found in the Photos library.  **Note**: It is of course possible to have more than one person with the same name, e.g. "Maria Smith", in the database.  `persons` assumes these are the same person and will list only one person named "Maria Smith".  If you need more information about persons in the database, see [person_info](#dbpersoninfo).
+
+#### <a name="dbpersoninfo">`person_info`</a>
+```python
+# assumes photosdb is a PhotosDB object (see above)
+person_info = photosdb.person_info
+```
+
+Returns a list of [PersonInfo](#personinfo) objects representing persons who appear in photos in the database. 
 
 #### `keywords_as_dict`
 ```python
@@ -806,7 +1033,8 @@ Returns a dictionary of keywords found in the Photos library where key is the ke
 persons_dict = photosdb.persons_as_dict
 ```
 
-Returns a dictionary of persons (faces) found in the Photos library where key is the person name and value is the count of how many times that person appears in the library (ie. how many photos are tagged with the person).  Resulting dictionary is in reverse sorted order (e.g. person who appears in the most photos is listed first).
+Returns a dictionary of persons (faces) found in the Photos library where key is the person name and value is the count of how many times that person appears in the library (ie. how many photos are tagged with the person).  Resulting dictionary is in reverse sorted order (e.g. person who appears in the most photos is listed first). **Note**: It is of course possible to have more than one person with the same name, e.g. "Maria Smith", in the database.  `persons_as_dict` assumes these are the same person and will list only one person named "Maria Smith".  If you need more information about persons in the database, see [person_info](#dbpersoninfo).
+
 
 #### `albums_as_dict`
 ```python
@@ -892,8 +1120,7 @@ for row in results:
 
 conn.close()
 ```
-
-#### ` photos(keywords=None, uuid=None, persons=None, albums=None, images=True, movies=True, from_date=None, to_date=None, intrash=False)`
+#### <A name="photos">`photos(keywords=None, uuid=None, persons=None, albums=None, images=True, movies=True, from_date=None, to_date=None, intrash=False)`</a>
 
 ```python
 # assumes photosdb is a PhotosDB object (see above)
@@ -928,6 +1155,8 @@ photos = photosdb.photos(
 - ```from_date```: datetime.datetime; if provided, finds photos where creation date >= from_date; default is None
 - ```to_date```: datetime.datetime; if provided, finds photos where creation date <= to_date; default is None
 - ```intrash```: if True, finds only photos in the "Recently Deleted" or trash folder, if False does not find any photos in the trash; default is False
+
+See also [get_photo()](#getphoto) which is much faster for retrieving a single photo.
 
 If more than one of (keywords, uuid, persons, albums,from_date, to_date) is provided, they are treated as "and" criteria. E.g.
 
@@ -1003,6 +1232,9 @@ For example, in my library, Photos says I have 19,386 photos and 474 movies.  Ho
 >>>
 ```
 
+#### <a name="getphoto">`get_photo(uuid)`</A>
+Returns a single PhotoInfo instance for photo with UUID matching `uuid` or None if no photo is found matching `uuid`.  If you know the UUID of a photo, `get_photo()` is much faster than `photos`.  See also [photos()](#photos).
+
 
 ### PhotoInfo 
 PhotosDB.photos() returns a list of PhotoInfo objects.  Each PhotoInfo object represents a single photo in the Photos library.
@@ -1037,8 +1269,17 @@ Returns a list of albums the photo is contained in. See also [album_info](#album
 #### `album_info`
 Returns a list of [AlbumInfo](#AlbumInfo) objects representing the albums the photo is contained in.  See also [albums](#albums).
 
+#### `import_info`
+Returns an [ImportInfo](#importinfo) object representing the import session associated with the photo or `None` if there is no associated import session.
+
 #### `persons`
 Returns a list of the names of the persons in the photo
+
+#### <a name="photopersoninfo">`person_info`</a>
+Returns a list of [PersonInfo](#personinfo) objects representing persons in the photo.  Each PersonInfo object is associated with one or more FaceInfo objects.
+
+#### <a name="photofaceinfo">`face_info`</a>
+Returns a list of [FaceInfo](#faceinfo) objects representing faces in the photo.  Each face is associated with the a PersonInfo object.
 
 #### `path`
 Returns the absolute path to the photo on disk as a string.  **Note**: this returns the path to the *original* unedited file (see [hasadjustments](#hasadjustments)).  If the file is missing on disk, path=`None` (see [ismissing](#ismissing)).
@@ -1047,6 +1288,39 @@ Returns the absolute path to the photo on disk as a string.  **Note**: this retu
 Returns the absolute path to the edited photo on disk as a string.  If the photo has not been edited, returns `None`.  See also [path](#path) and [hasadjustments](#hasadjustments).  
 
 **Note**: will also return None if the edited photo is missing on disk. 
+
+#### `path_raw`
+Returns the absolute path to the associated raw photo on disk as a string, if photo is part of a RAW+JPEG pair, otherwise returns None.  See [notes on Raw Photos](#raw-photos).
+
+#### `has_raw`
+Returns True if photo has an associated raw image, otherwise False. (e.g. Photo is a RAW+JPEG pair). See also [is_raw](#israw) and [notes on Raw Photos](#raw-photos).
+
+#### `israw`
+Returns True if photo is a raw image. E.g. it was imported as a single raw image, not part of a RAW+JPEG pair.  See also [has_raw](#has_raw) and .
+
+#### `raw_original`
+Returns True if associated raw image and the raw image is selected in Photos via "Use RAW as Original", otherwise returns False.  See [notes on Raw Photos](#raw-photos).
+
+#### `height`
+Returns height of the photo in pixels.  If image has been edited, returns height of the edited image, otherwise returns height of the original image.  See also [original_height](#original_height).
+
+#### `width`
+Returns width of the photo in pixels.  If image has been edited, returns width of the edited image, otherwise returns width of the original image.  See also [original_width](#original_width).
+
+#### `orientation`
+Returns EXIF orientation value of the photo as integer.  If image has been edited, returns orientation of the edited image, otherwise returns orientation of the original image. See also [original_orientation](#original_orientation).
+
+#### `original_height`
+Returns height of the original photo in pixels. See also [height](#height).
+
+#### `original_width`
+Returns width of the original photo in pixels. See also [width](#width). 
+
+#### `original_orientation`
+Returns EXIF orientation value of the original photo as integer. See also [orientation](#orientation).
+
+#### `original_filesize`
+Returns size of the original photo in bytes as integer.
 
 #### `ismissing`
 Returns `True` if the original image file is missing on disk, otherwise `False`.  This can occur if the file has been uploaded to iCloud but not yet downloaded to the local library or if the file was deleted or imported from a disk that has been unmounted and user hasn't enabled "Copy items to the Photos library" in Photos preferences. **Note**: this status is computed based on data in the Photos library and `ismissing` does not verify if the photo is actually missing. See also [path](#path).
@@ -1075,7 +1349,17 @@ Returns a [PlaceInfo](#PlaceInfo) object with reverse geolocation data or None i
 #### `shared`
 Returns True if photo is in a shared album, otherwise False.
 
-**Note**: *Only valid on Photos 5 / MacOS 10.15*; on Photos <= 4, returns None instead of True/False. 
+**Note**: *Only valid on Photos 5 / MacOS 10.15+; on Photos <= 4, returns None instead of True/False.
+
+#### `comments`
+Returns list of [CommentInfo](#commentinfo) objects for comments on shared photos or empty list if no comments.
+
+**Note**: *Only valid on Photos 5 / MacOS 10.15+; on Photos <= 4, returns empty list.
+
+#### `likes`
+Returns list of [LikeInfo](#likeinfo) objects for likes on shared photos or empty list if no likes.
+
+**Note**: *Only valid on Photos 5 / MacOS 10.15+; on Photos <= 4, returns empty list.
 
 #### `isphoto`
 Returns True if type is photo/still image, otherwise False
@@ -1092,7 +1376,16 @@ Returns True if photo is a [cloud asset](#iscloudasset) and is synched to iCloud
 **Note**: Applies to master (original) photo only.  It's possible for the master to be in iCloud but a local edited version is not yet synched to iCloud. `incloud` provides status of only the master photo.  osxphotos does not yet provide a means to determine if the edited version is in iCloud.  If you need this feature, please open an [issue](https://github.com/RhetTbull/osxphotos/issues).
 
 #### `uti`
-Returns Uniform Type Identifier (UTI) for the image, for example: 'public.jpeg' or 'com.apple.quicktime-movie'
+Returns Uniform Type Identifier (UTI) for the current version of the image, for example: 'public.jpeg' or 'com.apple. quicktime-movie'.  If the image has been edited, `uti` will return the UTI for the edited image, otherwise it will return the UTI for the original image.
+
+#### `uti_original`
+Returns Uniform Type Identifier (UTI) for the original unedited image, for example: 'public.jpeg' or 'com.apple.quicktime-movie'.
+
+#### `uti_edited`
+Returns Uniform Type Identifier (UTI) for the edited image, for example: 'public.jpeg'.  Returns None if the photo does not have adjustments.
+
+#### `uti_raw`
+Returns Uniform Type Identifier (UTI) for the associated raw image, if there is one; for example, 'com.canon.cr2-raw-image'.  If the image is raw but not part of a RAW+JPEG pair, `uti_raw` returns None.  In this case, use `uti`, or `uti_original`.  See also [has_raw](#has_raw) and [notes on Raw Photos](#raw-photos).
 
 #### `burst`
 Returns True if photos is a burst image (e.g. part of a set of burst images), otherwise False.
@@ -1148,6 +1441,9 @@ Returns True if photo is a panorama, otherwise False.
 
 **Note**: The result of `PhotoInfo.panorama` will differ from the "Panoramas" Media Types smart album in that it will also identify panorama photos from older phones that Photos does not recognize as panoramas. 
 
+#### `slow_mo`
+Returns True if photo is a slow motion video, otherwise False
+
 #### `labels`
 Returns image categorization labels associated with the photo as list of str.
 
@@ -1190,7 +1486,8 @@ exiftool must be installed in the path for this to work.  If exiftool cannot be 
 
 `ExifTool` provides the following methods:
 
-- `as_dict()`: returns all EXIF metadata found in the file as a dictionary in following form (Note: this shows just a subset of available metadata).  See [exiftool](https://exiftool.org/) documentation to understand which metadata keys are available.
+- `asdict()`: returns all EXIF metadata found in the file as a dictionary in following form (Note: this shows just a subset of available metadata).  See [exiftool](https://exiftool.org/) documentation to understand which metadata keys are available.
+
 ```python
 {'Composite:Aperture': 2.2,
  'Composite:GPSPosition': '-34.9188916666667 138.596861111111',
@@ -1203,7 +1500,7 @@ exiftool must be installed in the path for this to work.  If exiftool cannot be 
 }
 ```
 
-- `json()`: returns same information as `as_dict()` but as a serialized JSON string.
+- `json()`: returns same information as `asdict()` but as a serialized JSON string.
 
 - `setvalue(tag, value)`: write to the EXIF data in the photo file. To delete a tag, use setvalue with value = `None`. For example:
 ```python
@@ -1214,7 +1511,7 @@ photo.exiftool.setvalue("XMP:Title", "Title of photo")
 photo.exiftool.addvalues("IPTC:Keywords", "vacation", "beach")
 ```
 
-**Caution**: I caution against writing new EXIF data to photos in the Photos library because this will overwrite the original copy of the photo and could adversely affect how Photos behaves.  `exiftool.as_dict()` is useful for getting access to all the photos information but if you want to write new EXIF data, I recommend you export the photo first then write the data.  [PhotoInfo.export()](#export) does this if called with `exiftool=True`.
+**Caution**: I caution against writing new EXIF data to photos in the Photos library because this will overwrite the original copy of the photo and could adversely affect how Photos behaves.  `exiftool.asdict()` is useful for getting access to all the photos information but if you want to write new EXIF data, I recommend you export the photo first then write the data.  [PhotoInfo.export()](#export) does this if called with `exiftool=True`.
 
 #### `score`
 Returns a [ScoreInfo](#scoreinfo) data class object which provides access to the computed aesthetic scores for each photo.
@@ -1222,10 +1519,13 @@ Returns a [ScoreInfo](#scoreinfo) data class object which provides access to the
 **Note**: Valid only for Photos 5; returns None for earlier Photos versions.
 
 #### `json()`
-Returns a JSON representation of all photo info 
+Returns a JSON representation of all photo info.
+
+#### `asdict()`
+Returns a dictionary representation of all photo info.
 
 #### `export()`
-`export(dest, *filename, edited=False, live_photo=False, export_as_hardlink=False, overwrite=False, increment=True, sidecar_json=False, sidecar_xmp=False, use_photos_export=False, timeout=120, exiftool=False, no_xattr=False, use_albums_as_keywords=False, use_persons_as_keywords=False)`
+`export(dest, *filename, edited=False, live_photo=False, export_as_hardlink=False, overwrite=False, increment=True, sidecar_json=False, sidecar_xmp=False, use_photos_export=False, timeout=120, exiftool=False, use_albums_as_keywords=False, use_persons_as_keywords=False)`
 
 Export photo from the Photos library to another destination on disk.  
 - dest: must be valid destination path as str (or exception raised).
@@ -1240,7 +1540,6 @@ Export photo from the Photos library to another destination on disk.
 - use_photos_export: boolean; (default=False), if True will attempt to export photo via applescript interaction with Photos; useful for forcing download of missing photos.  This only works if the Photos library being used is the default library (last opened by Photos) as applescript will directly interact with whichever library Photos is currently using.
 - timeout: (int, default=120) timeout in seconds used with use_photos_export
 - exiftool: (boolean, default = False) if True, will use [exiftool](https://exiftool.org/) to write metadata directly to the exported photo; exiftool must be installed and in the system path
-- no_xattr: (boolean, default = False); if True, exports file without preserving extended attributes
 - use_albums_as_keywords: (boolean, default = False); if True, will use album names as keywords when exporting metadata with exiftool or sidecar
 - use_persons_as_keywords: (boolean, default = False); if True, will use person names as keywords when exporting metadata with exiftool or sidecar
 
@@ -1262,27 +1561,81 @@ Then
 
 If overwrite=False and increment=False, export will fail if destination file already exists
 
-**Implementation Note**: Because the usual python file copy methods don't preserve all the metadata available on MacOS, export uses `/usr/bin/ditto` to do the copy for export. ditto preserves most metadata such as extended attributes, permissions, ACLs, etc.
 
 #### <a name="rendertemplate">`render_template()`</a>
 
-`render_template(template_str, none_str = "_", path_sep = None, expand_inplace = False, inplace_sep = None)`
-Render template string for photo.  none_str is used if template substitution results in None value and no default specified. 
-- `template_str`: str in form "{name,DEFAULT}" where name is one of the values in table below. The "," and default value that follows are optional. If specified, "DEFAULT" will be used if "name" is None.  This is useful for values which are not always present, for example reverse geolocation data.
+`render_template(template_str, none_str = "_", path_sep = None, expand_inplace = False, inplace_sep = None, filename=False, dirname=False, replacement=":",)`
+
+Render template string for photo.  none_str is used if template substitution results in None value and no default specified.
+
+- `template_str`: str in format "{[[DELIM]+]name[(PATH_SEP)][?TRUE_VALUE][,[DEFAULT]]}" where name is one of the values in the [Template Substitutions](#template-substitutions) table. See notes below regarding specific details of the syntax.
 - `none_str`: optional str to use as substitution when template value is None and no default specified in the template string.  default is "_".
-- `path_sep`: optional character to use as path separator, default is os.path.sep
+- `path_sep`: optional character to use as path separator, default is `os.path.sep`
 - `expand_inplace`: expand multi-valued substitutions in-place as a single string instead of returning individual strings
 - `inplace_sep`: optional string to use as separator between multi-valued keywords with expand_inplace; default is ','
+- `filename`: if True, template output will be sanitized to produce valid file name
+- `dirname`: if True, template output will be sanitized to produce valid directory name
+- `replacement`: str, value to replace any illegal file path characters with; default = ":"
 
 Returns a tuple of (rendered, unmatched) where rendered is a list of rendered strings with all substitutions made and unmatched is a list of any strings that resembled a template substitution but did not match a known substitution. E.g. if template contained "{foo}", unmatched would be ["foo"].
 
-e.g. `render_filepath_template("{created.year}/{foo}", photo)` would return `(["2020/{foo}"],["foo"])`
+e.g. `render_template("{created.year}/{foo}", photo)` would return `(["2020/{foo}"],["foo"])`
 
 If you want to include "{" or "}" in the output, use "{{" or "}}"
 
-e.g. `render_filepath_template("{created.year}/{{foo}}", photo)` would return `(["2020/{foo}"],[])`
+e.g. `render_template("{created.year}/{{foo}}", photo)` would return `(["2020/{foo}"],[])`
 
 Some substitutions, notably `album`, `keyword`, and `person` could return multiple values, hence a new string will be return for each possible substitution (hence why a list of rendered strings is returned).  For example, a photo in 2 albums: 'Vacation' and 'Family' would result in the following rendered values if template was "{created.year}/{album}" and created.year == 2020: `["2020/Vacation","2020/Family"]` 
+
+The template field format contains optional modifiers:
+
+`"{[[DELIM]+]name[(PATH_SEP)][?TRUE_VALUE][,[DEFAULT]]}"`
+
+`DELIM`: optional delimiter string to use when expanding multi-valued template values in-place
+
+`+`: If present before template `name`, expands the template in place.  If `DELIM` not provided, values are joined with no delimiter.
+
+e.g. if Photo keywords are `["foo","bar"]`:
+
+- `"{keyword}"` renders to `["foo", "bar"]`
+- `"{,+keyword}"` renders to: `["foo,bar"]`
+- `"{; +keyword}"` renders to: `["foo; bar"]`
+- `"{+keyword}"` renders to `["foobar"]`
+
+`PATH_SEP`: optional path separator to use when joining path like fields, for example `{folder_album}`.  May also be provided as `path_sep` argument in `render_template()`.  If provided both in the call to `render_template()` and in the template itself, the value in the template string takes precedence.  If not provided in either the template string or in `path_sep` argument, defaults to `os.path.sep`.
+
+e.g. If Photo is in `Album1` in `Folder1`:
+
+- `"{folder_album}"` renders to `["Folder1/Album1"]`
+- `"{folder_album(:)}"` renders to `["Folder1:Album1"]`
+- `"{folder_album()}"` renders to `["Folder1Album1"]`
+
+`?TRUE_VALUE`: optional value to use if name is boolean-type field which evaluates to true.  For example `"{hdr}"` evaluates to True if photo is an high dynamic range (HDR) image and False otherwise. In these types of fields, use `?TRUE_VALUE` to provide the value if True and `,DEFAULT` to provide the value of False.  
+
+e.g. if photo is an HDR image,
+
+- `"{hdr?ISHDR,NOTHDR}"` renders to `["ISHDR"]`
+
+and if it is not an HDR image,
+
+- `"{hdr?ISHDR,NOTHDR}"` renders to `["NOTHDR"]`
+
+Either or both `TRUE_VALUE` or `DEFAULT` (False value) may be empty which would result in empty string `[""]` when rendered.
+
+`,DEFAULT`: optional default value to use if the template name has no value.  This modifier is also used for the value if False for boolean-type fields (see above) as well as to hold a sub-template for values like `{created.strftime}`.  If no default value provided, "_" is used. May also be provided in the `none_str` argument to `render_template()`.  If provided both in the template string and in `none_str`, the value in the template string takes precedence.
+
+e.g., if photo has no title set,
+
+- `"{title}"` renders to ["_"]
+- `"{title,I have no title}"` renders to `["I have no title"]`
+
+Template fields such as `created.strftime` use the DEFAULT value to pass the template to use for `strftime`.  
+
+e.g., if photo date is 4 February 2020, 19:07:38,
+
+- `"{created.strftime,%Y-%m-%d-%H%M%S}"` renders to `["2020-02-04-190738"]`
+
+Some template fields such as `"{media_type}"` use the `DEFAULT` value to allow customization of the output. For example, `"{media_type}"` resolves to the special media type of the photo such as `panorama` or `selfie`.  You may use the `DEFAULT` value to override these in form: `"{media_type,video=vidéo;time_lapse=vidéo_accélérée}"`. In this example, if photo was a time_lapse photo, `media_type` would resolve to `vidéo_accélérée` instead of `time_lapse`. 
 
 See [Template Substitutions](#template-substitutions) for additional details.
 
@@ -1332,8 +1685,17 @@ Returns the universally unique identifier (uuid) of the album.  This is how Phot
 #### `title`
 Returns the title or name of the album.
 
-#### `photos`
-Returns a list of [PhotoInfo](#PhotoInfo) objects representing each photo contained in the album.
+#### <a name="albumphotos">`photos`</a>
+Returns a list of [PhotoInfo](#PhotoInfo) objects representing each photo contained in the album sorted in the same order as in Photos. (e.g. if photos were manually sorted in the Photos albums, photos returned by `photos` will be in same order as they appear in the Photos album)
+
+#### `creation_date`
+Returns the creation date as a timezone aware datetime.datetime object of the album.
+
+#### `start_date`
+Returns the date of earliest photo in the album as a timezone aware datetime.datetime object.
+
+#### `end_date`
+Returns the date of latest photo in the album as a timezone aware datetime.datetime object.
 
 #### `folder_list`
 Returns a hierarchical list of [FolderInfo](#FolderInfo) objects representing the folders the album is contained in.  For example, if album "AlbumInFolder" is in SubFolder2 of Folder1 as illustrated below, would return a list of `FolderInfo` objects representing ["Folder1", "SubFolder2"] 
@@ -1360,6 +1722,25 @@ Photos Library
 #### `parent`
 Returns a [FolderInfo](#FolderInfo) object representing the albums parent folder or `None` if album is not a in a folder.
 
+### ImportInfo 
+PhotosDB.import_info returns a list of ImportInfo objects.  Each ImportInfo object represents an import session in the library.  PhotoInfo.import_info returns a single ImportInfo object representing the import session for the photo (or `None` if no associated import session).
+
+**Note**: Photos 5+ only.  Not implemented for Photos version <= 4.
+
+#### `uuid`
+Returns the universally unique identifier (uuid) of the import session.  This is how Photos keeps track of individual objects within the database.
+
+#### <a name="importphotos">`photos`</a>
+Returns a list of [PhotoInfo](#PhotoInfo) objects representing each photo contained in the import session.
+
+#### `creation_date`
+Returns the creation date as a timezone aware datetime.datetime object of the import session.
+
+#### `start_date`
+Returns the start date as a timezone aware datetime.datetime object for when the import session bega.
+
+#### `end_date`
+Returns the end date as a timezone aware datetime.datetime object for when the import session completed.
 
 ### FolderInfo 
 PhotosDB.folder_info returns a list of FolderInfo objects representing the top level folders in the library.  Each FolderInfo object represents a single folder in the Photos library.
@@ -1372,6 +1753,11 @@ Returns the title or name of the folder.
 
 #### `album_info`
 Returns a list of [AlbumInfo](#AlbumInfo) objects representing each album contained in the folder.
+
+#### `album_info_shared`
+Returns a list of [AlbumInfo](#AlbumInfo) objects for each shared album in the photos database.
+
+**Note**: Only valid for Photos 5+; on Photos <= 4, prints warning and returns empty list.
 
 #### `subfolders`
 Returns a list of [FolderInfo](#FolderInfo) objects representing the sub-folders of the folder.  
@@ -1507,39 +1893,207 @@ Example: find your "best" photo of food
 >>> best_food_photo = sorted([p for p in photos if "food" in p.labels_normalized], key=lambda p: p.score.overall, reverse=True)[0]
 ```
 
+### PersonInfo
+[PhotosDB.person_info](#dbpersoninfo) and [PhotoInfo.person_info](#photopersoninfo) return a list of PersonInfo objects represents persons in the database and in a photo, respectively.  The PersonInfo class has the following properties and methods.
+
+#### `name`
+Returns the full name of the person represented in the photo. For example, "Maria Smith".
+
+#### `display_name`
+Returns the display name of the person represented in the photo. For example, "Maria".
+
+#### `uuid`
+Returns the UUID of the person as stored in the Photos library database.
+
+#### `keyphoto`
+Returns a PhotoInfo instance for the photo designated as the key photo for the person. This is the Photos uses to display the person's face thumbnail in Photos' "People" view. 
+
+#### `facecount`
+Returns a count of how many times this person appears in images in the database.
+
+#### <a name="personphotos">`photos`</a>
+Returns a list of PhotoInfo objects representing all photos the person appears in.
+
+#### <a name="personfaceinfo">`face_info`</a>
+Returns a list of [FaceInfo](#faceinfo) objects associated with this person sorted by quality score. Highest quality face is result[0] and lowest quality face is result[n].
+
+#### `json()`
+Returns a json string representation of the PersonInfo instance.
+
+#### `asdict()`
+Returns a dictionary representation of the PersonInfo instance.
+
+### FaceInfo 
+[PhotoInfo.face_info](#photofaceinfo) return a list of FaceInfo objects representing detected faces in a photo.  The FaceInfo class has the following properties and methods.
+
+#### `uuid`
+UUID of the face.
+
+#### `name`
+Full name of the person represented by the face or None if person hasn't been given a name in Photos.  This is a shortcut for `FaceInfo.person_info.name`.
+
+#### `asset_uuid`
+UUID of the photo this face is associated with.
+
+#### `person_info`
+[PersonInfo](#personinfo) object associated with this face.
+
+#### `photo`
+[PhotoInfo](#photoinfo) object representing the photo that contains this face.
+
+#### `face_rect()`
+Returns list of x, y coordinates as tuples `[(x0, y0), (x1, y1)]` representing the corners of rectangular region that contains the face.  Coordinates are in same format and [reference frame](https://pillow.readthedocs.io/en/stable/handbook/concepts.html#coordinate-system) as used by [Pillow](https://pypi.org/project/Pillow/) imaging library.  **Note**: face_rect() and all other properties/methods that return coordinates refer to the *current version* of the image. E.g. if the image has been edited ([`PhotoInfo.hasadjustments`](#hasadjustments)), these refer to [`PhotoInfo.path_edited`](#pathedited).  If the image has no adjustments, these coordinates refer to the original photo ([`PhotoInfo.path`](#path)).
+
+#### `center`
+Coordinates as (x, y) tuple for the center of the detected face.
+
+#### `mouth`
+Coordinates as (x, y) tuple for the mouth of the detected face.
+
+#### `left_eye`
+Coordinates as (x, y) tuple for the left eye of the detected face.
+
+#### `right_eye`
+Coordinates as (x, y) tuple for the right eye of the detected face.
+
+#### `size_pixels`
+Diameter of detected face region in pixels.
+
+#### `roll_pitch_yaw()`
+Roll, pitch, and yaw of face region in radians.  Returns a tuple of (roll, pitch, yaw)
+
+#### roll
+Roll of face region in radians. 
+
+#### pitch 
+Pitch of face region in radians. 
+
+#### yaw 
+Yaw of face region in radians. 
+
+#### `Additional properties`
+The following additional properties are also available but are not yet fully documented.
+
+- `center_x`: x coordinate of center of face in Photos' internal reference frame
+- `center_y`: y coordinate of center of face in Photos' internal reference frame
+- `mouth_x`: x coordinate of mouth in Photos' internal reference frame
+- `mouth_y`: y coordinate of mouth in Photos' internal reference frame
+- `left_eye_x`: x coordinate of left eye in Photos' internal reference frame
+- `left_eye_y`: y coordinate of left eye in Photos' internal reference frame
+- `right_eye_x`: x coordinate of right eye in Photos' internal reference frame
+- `right_eye_y`: y coordinate of right eye in Photos' internal reference frame
+- `size`: size of face region in Photos' internal reference frame
+- `quality`: quality measure of detected face
+- `source_width`: width in pixels of photo
+- `source_height`: height in pixels of photo
+- `has_smile`: 
+- `left_eye_closed`: 
+- `right_eye_closed`:
+- `manual`: 
+- `face_type`:
+- `age_type`:
+- `bald_type`:
+- `eye_makeup_type`:
+- `eye_state`:
+- `facial_hair_type`:
+- `gender_type`:
+- `glasses_type`:
+- `hair_color_type`:
+- `lip_makeup_type`:
+- `smile_type`:
+
+#### `asdict()`
+Returns a dictionary representation of the FaceInfo instance.
+
+#### `json()`
+Returns a JSON representation of the FaceInfo instance.
+
+### CommentInfo
+[PhotoInfo.comments](#comments) returns a list of CommentInfo objects for comments on shared photos. (Photos 5/MacOS 10.15+ only).  The list of CommentInfo objects will be sorted in ascending order by date comment was made.  CommentInfo contains the following fields:
+
+- `datetime`: `datetime.datetime`, date/time comment was made
+- `user`: `str`, name of user who made the comment
+- `ismine`: `bool`, True if comment was made by person who owns the Photos library being operated on
+- `text`: `str`, text of the actual comment
+
+### LikeInfo
+[PhotoInfo.likes](#likes) returns a list of LikeInfo objects for "likes" on shared photos. (Photos 5/MacOS 10.15+ only).  The list of LikeInfo objects will be sorted in ascending order by date like was made.  LikeInfo contains the following fields:
+
+- `datetime`: `datetime.datetime`, date/time like was made
+- `user`: `str`, name of user who made the like 
+- `ismine`: `bool`, True if like was made by person who owns the Photos library being operated on
+
+### Raw Photos
+Handling raw photos in `osxphotos` requires a bit of extra work.  Raw photos in Photos can be imported in two different ways: 1) a single raw photo with no associated JPEG image is imported 2) a raw+JPEG pair is imported -- two separate images with same file stem (e.g. `IMG_0001.CR2` and `IMG_001.JPG`) are imported.  
+
+The latter are treated by Photos as a single image.  By default, Photos will treat these as a JPEG image.  They are denoted in the Photos interface with a "J" icon superimposed on the image.  In Photos, the user can select "Use RAW as original" in which case the "J" icon changes to an "R" icon and all subsequent edits will use the raw image as the original. To further complicate this, different versions of Photos handle these differently in their internal logic.  
+
+`osxphotos` attempts to simplify the handling of these raw+JPEG pairs by providing a set of attributes for accessing both the JPEG and the raw version.  For example, [PhotoInfo.has_raw](#has_raw) will be True if the photo has an associated raw image but False otherwise and [PhotoInfo.path_raw](#path_raw) provides the path to the associated raw image.  Reference the following table for the various attributes useful for dealing with raw images.  Given the different ways Photos deals with raw images I've struggled with how to represent these in a logical and consistent manner.  If you have suggestions for a better interface, please open an [issue](https://github.com/RhetTbull/osxphotos/issues)!
+
+#### Raw-Related Attributes 
+
+|`PhotoInfo` attribute|`IMG_0001.CR2` imported without raw+JPEG pair|`IMG_0001.CR2` + `IMG_0001.JPG` raw+JPEG pair, JPEG is original|`IMG_0001.CR2` + `IMG_0001.JPG` raw+jpeg pair, raw is original|
+|----------|----------|----------|----------|
+|[israw](#israw)| True | False | False |
+|[has_raw](#has_raw)| False | True | True |
+|[uti](#uti) | `com.canon.cr2-raw-image` | `public.jpeg` | `public.jpeg` |
+|[uti_raw](#uti_raw) | None | `com.canon.cr2-raw-image` | `com.canon.cr2-raw-image` |
+|[raw_original](#raw_original) | False | False | True |
+|[path](#path) | `/path/to/IMG_0001.CR2` | `/path/to/IMG_0001.JPG` | `/path/to/IMG_0001.JPG` |
+|[path_raw](#path_raw) | None | `/path/to/IMG_0001.CR2` | `/path/to/IMG_0001.CR2` | 
+
+#### Example
+To get the path of every raw photo, whether it's a single raw photo or a raw+JPEG pair, one could do something like this:
+
+```python
+>>> import osxphotos
+>>> photosdb = osxphotos.PhotosDB()
+>>> photos = photosdb.photos()
+>>> all_raw = [p for p in photos if p.israw or p.has_raw]
+>>> for raw in all_raw:
+...     path = raw.path if raw.israw else raw.path_raw
+...     print(path)
+```
+
 ### Template Substitutions
 
-The following substitutions are availabe for use with `PhotoInfo.render_template()` 
+The following template field substitutions are availabe for use with `PhotoInfo.render_template()`
+
 | Substitution | Description |
 |--------------|-------------|
 |{name}|Current filename of the photo|
 |{original_name}|Photo's original filename when imported to Photos|
 |{title}|Title of the photo|
 |{descr}|Description of the photo|
+|{media_type}|Special media type resolved in this precedence: selfie, time_lapse, panorama, slow_mo, screenshot, portrait, live_photo, burst, photo, video. Defaults to 'photo' or 'video' if no special type. Customize one or more media types using format: '{media_type,video=vidéo;time_lapse=vidéo_accélérée}'|
+|{photo_or_video}|'photo' or 'video' depending on what type the image is. To customize, use default value as in '{photo_or_video,photo=fotos;video=videos}'|
+|{hdr}|Photo is HDR?; True/False value, use in format '{hdr?VALUE_IF_TRUE,VALUE_IF_FALSE}'|
+|{edited}|Photo has been edited (has adjustments)?; True/False value, use in format '{edited?VALUE_IF_TRUE,VALUE_IF_FALSE}'|
 |{created.date}|Photo's creation date in ISO format, e.g. '2020-03-22'|
-|{created.year}|4-digit year of file creation time|
-|{created.yy}|2-digit year of file creation time|
-|{created.mm}|2-digit month of the file creation time (zero padded)|
-|{created.month}|Month name in user's locale of the file creation time|
-|{created.mon}|Month abbreviation in the user's locale of the file creation time|
-|{created.dd}|2-digit day of the month (zero padded) of file creation time|
-|{created.dow}|Day of week in user's locale of the file creation time|
-|{created.doy}|3-digit day of year (e.g Julian day) of file creation time, starting from 1 (zero padded)|
-|{created.hour}|2-digit hour of the file creation time|
-|{created.min}|2-digit minute of the file creation time|
-|{created.sec}|2-digit second of the file creation time|
+|{created.year}|4-digit year of photo creation time|
+|{created.yy}|2-digit year of photo creation time|
+|{created.mm}|2-digit month of the photo creation time (zero padded)|
+|{created.month}|Month name in user's locale of the photo creation time|
+|{created.mon}|Month abbreviation in the user's locale of the photo creation time|
+|{created.dd}|2-digit day of the month (zero padded) of photo creation time|
+|{created.dow}|Day of week in user's locale of the photo creation time|
+|{created.doy}|3-digit day of year (e.g Julian day) of photo creation time, starting from 1 (zero padded)|
+|{created.hour}|2-digit hour of the photo creation time|
+|{created.min}|2-digit minute of the photo creation time|
+|{created.sec}|2-digit second of the photo creation time|
 |{created.strftime}|Apply strftime template to file creation date/time. Should be used in form {created.strftime,TEMPLATE} where TEMPLATE is a valid strftime template, e.g. {created.strftime,%Y-%U} would result in year-week number of year: '2020-23'. If used with no template will return null value. See https://strftime.org/ for help on strftime templates.|
 |{modified.date}|Photo's modification date in ISO format, e.g. '2020-03-22'|
-|{modified.year}|4-digit year of file modification time|
-|{modified.yy}|2-digit year of file modification time|
-|{modified.mm}|2-digit month of the file modification time (zero padded)|
-|{modified.month}|Month name in user's locale of the file modification time|
-|{modified.mon}|Month abbreviation in the user's locale of the file modification time|
-|{modified.dd}|2-digit day of the month (zero padded) of the file modification time|
-|{modified.doy}|3-digit day of year (e.g Julian day) of file modification time, starting from 1 (zero padded)|
-|{modified.hour}|2-digit hour of the file modification time|
-|{modified.min}|2-digit minute of the file modification time|
-|{modified.sec}|2-digit second of the file modification time|
+|{modified.year}|4-digit year of photo modification time|
+|{modified.yy}|2-digit year of photo modification time|
+|{modified.mm}|2-digit month of the photo modification time (zero padded)|
+|{modified.month}|Month name in user's locale of the photo modification time|
+|{modified.mon}|Month abbreviation in the user's locale of the photo modification time|
+|{modified.dd}|2-digit day of the month (zero padded) of the photo modification time|
+|{modified.dow}|Day of week in user's locale of the photo modification time|
+|{modified.doy}|3-digit day of year (e.g Julian day) of photo modification time, starting from 1 (zero padded)|
+|{modified.hour}|2-digit hour of the photo modification time|
+|{modified.min}|2-digit minute of the photo modification time|
+|{modified.sec}|2-digit second of the photo modification time|
 |{today.date}|Current date in iso format, e.g. '2020-03-22'|
 |{today.year}|4-digit year of current date|
 |{today.yy}|2-digit year of current date|
@@ -1572,6 +2126,8 @@ The following substitutions are availabe for use with `PhotoInfo.render_template
 |{person}|Person(s) / face(s) in a photo|
 |{label}|Image categorization label associated with a photo (Photos 5 only)|
 |{label_normalized}|All lower case version of 'label' (Photos 5 only)|
+|{comment}|Comment(s) on shared Photos; format is 'Person name: comment text' (Photos 5 only)|
+|{exiftool:GROUP:TAGNAME}|Use exiftool (https://exiftool.org) to extract metadata, in form GROUP:TAGNAME, from image.  E.g. '{exiftool:EXIF:Make}' to get camera make, or {exiftool:IPTC:Keywords} to extract keywords. See https://exiftool.org/TagNames/ for list of valid tag names.  You must specify group (e.g. EXIF, IPTC, etc) as used in `exiftool -G`. exiftool must be installed in the path to use this template.|
 
 ### Utility Functions
 
@@ -1652,7 +2208,9 @@ if __name__ == "__main__":
 ## Related Projects
 
 - [rhettbull/photosmeta](https://github.com/rhettbull/photosmeta): uses osxphotos and [exiftool](https://exiftool.org/) to apply metadata from Photos as exif data in the photo files.  Can also export photos while preserving metadata and also apply Photos keywords as spotlight tags to make it easier to search for photos using spotlight.  This is mostly made obsolete by osxphotos.  The one feature that photosmeta has that osxphotos does not is ability to update the metadata of the actual photo files in the Photos library without exporting them. (Use with caution!)
+- [rhettbull/PhotoScript](https://github.com/RhetTbull/PhotoScript): python wrapper around Photos' applescript API allowing automation of Photos (including creation/deletion of items) from python.
 - [patrikhson/photo-export](https://github.com/patrikhson/photo-export): Exports older versions of Photos databases.  Provided the inspiration for osxphotos.
+- [doersino/apple-photos-export](https://github.com/doersino/apple-photos-export): Photos export script for Mojave.
 - [orangeturtle739/photos-export](https://github.com/orangeturtle739/photos-export): Set of scripts to export Photos libraries.
 - [ndbroadbent/icloud_photos_downloader](https://github.com/ndbroadbent/icloud_photos_downloader): Download photos from iCloud.  Currently unmaintained.
 - [AaronVanGeffen/ExportPhotosLibrary](https://github.com/AaronVanGeffen/ExportPhotosLibrary): Another python script for exporting older versions of Photos libraries.
@@ -1661,7 +2219,7 @@ if __name__ == "__main__":
 
 ## Contributing
 
-Contributing is easy!  if you find bugs or want to suggest additional features/changes, please open an [issue](https://github.com/rhettbull/osxphotos/issues/).
+Contributing is easy!  if you find bugs or want to suggest additional features/changes, please open an [issue](https://github.com/rhettbull/osxphotos/issues/) or join the [discussion](https://github.com/RhetTbull/osxphotos/discussions).
 
 I'll gladly consider pull requests for bug fixes or feature implementations.  
 
@@ -1669,20 +2227,53 @@ If you have an interesting example that shows usage of this package, submit an i
 
 Testing against "real world" Photos libraries would be especially helpful.  If you discover issues in testing against your Photos libraries, please open an issue.  I've done extensive testing against my own Photos library but that's a since data point and I'm certain there are issues lurking in various edge cases I haven't discovered yet.
 
+
+### Contributors ✨
+
+Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/docs/en/emoji-key)):
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+<table>
+  <tr>
+    <td align="center"><a href="https://github.com/britiscurious"><img src="https://avatars1.githubusercontent.com/u/25646439?v=4?s=100" width="100px;" alt=""/><br /><sub><b>britiscurious</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=britiscurious" title="Documentation">📖</a> <a href="https://github.com/RhetTbull/osxphotos/commits?author=britiscurious" title="Code">💻</a></td>
+    <td align="center"><a href="https://github.com/mwort"><img src="https://avatars3.githubusercontent.com/u/8170417?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Michel Wortmann</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=mwort" title="Code">💻</a></td>
+    <td align="center"><a href="https://github.com/PabloKohan"><img src="https://avatars3.githubusercontent.com/u/8790976?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Pablo 'merKur' Kohan</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=PabloKohan" title="Code">💻</a></td>
+    <td align="center"><a href="https://github.com/hshore29"><img src="https://avatars2.githubusercontent.com/u/7023497?v=4?s=100" width="100px;" alt=""/><br /><sub><b>hshore29</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=hshore29" title="Code">💻</a></td>
+    <td align="center"><a href="http://3e.org/"><img src="https://avatars0.githubusercontent.com/u/41439?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Daniel M. Drucker</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=dmd" title="Code">💻</a></td>
+    <td align="center"><a href="https://github.com/jystervinou"><img src="https://avatars3.githubusercontent.com/u/132356?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Jean-Yves Stervinou</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=jystervinou" title="Code">💻</a></td>
+    <td align="center"><a href="https://dethi.me/"><img src="https://avatars2.githubusercontent.com/u/1011520?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Thibault Deutsch</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=dethi" title="Code">💻</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/grundsch"><img src="https://avatars0.githubusercontent.com/u/3874928?v=4?s=100" width="100px;" alt=""/><br /><sub><b>grundsch</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=grundsch" title="Code">💻</a></td>
+    <td align="center"><a href="https://github.com/agprimatic"><img src="https://avatars1.githubusercontent.com/u/4685054?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Ag Primatic</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=agprimatic" title="Code">💻</a></td>
+    <td align="center"><a href="https://github.com/hhoeck"><img src="https://avatars1.githubusercontent.com/u/6313998?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Horst Höck</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=hhoeck" title="Code">💻</a></td>
+    <td align="center"><a href="https://github.com/jstrine"><img src="https://avatars1.githubusercontent.com/u/33943447?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Jonathan Strine</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=jstrine" title="Code">💻</a></td>
+    <td align="center"><a href="https://github.com/finestream"><img src="https://avatars1.githubusercontent.com/u/16638513?v=4?s=100" width="100px;" alt=""/><br /><sub><b>finestream</b></sub></a><br /><a href="https://github.com/RhetTbull/osxphotos/commits?author=finestream" title="Documentation">📖</a></td>
+  </tr>
+</table>
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
+
+This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind welcome!
+
 ## Known Bugs
 
-My goal is make osxphotos as reliable and comprehensive as possible.  The test suite currently has over 400 tests--but there are still some [bugs](https://github.com/RhetTbull/osxphotos/issues?q=is%3Aissue+is%3Aopen+label%3Abug) or incomplete features lurking.  If you find bugs please open an [issue](https://github.com/RhetTbull/osxphotos/issues).  Notable issues include:
+My goal is make osxphotos as reliable and comprehensive as possible.  The test suite currently has over 800 tests--but there are still some [bugs](https://github.com/RhetTbull/osxphotos/issues?q=is%3Aissue+is%3Aopen+label%3Abug) or incomplete features lurking.  If you find bugs please open an [issue](https://github.com/RhetTbull/osxphotos/issues).  Please consult the list of open bugs before deciding that you want to use this code on your Photos library.  Notable issues include:
 
-- RAW images imported to Photos with an associated jpeg preview are not handled correctly by osxphotos.  osxphotos query and export will operate on the jpeg preview instead of the RAW image as will `PhotoInfo.path`.  If the user selects "Use RAW as original" in Photos, the RAW image will be exported or operated on but the jpeg will be ignored.  See [Issue #101](https://github.com/RhetTbull/osxphotos/issues/101) Note: Beta version of fix for this bug is implemented in the current version of osxphotos.
-- The `--download-missing` option for `osxphotos export` does not work correctly with burst images.  It will download the primary image but not the other burst images.  See [Issue #75](https://github.com/RhetTbull/osxphotos/issues/75)
+- Face coordinates (mouth, left eye, right eye) may not be correct for images where the head is tilted.  See [Issue #196](https://github.com/RhetTbull/osxphotos/issues/196).
+- Raw images imported to Photos with an associated jpeg preview are not handled correctly by osxphotos.  osxphotos query and export will operate on the jpeg preview instead of the raw image as will `PhotoInfo.path`.  If the user selects "Use RAW as original" in Photos, the raw image will be exported or operated on but the jpeg will be ignored.  See [Issue #101](https://github.com/RhetTbull/osxphotos/issues/101). Note: Beta version of fix for this bug is implemented in the current version of osxphotos.
+- The `--download-missing` option for `osxphotos export` does not work correctly with burst images.  It will download the primary image but not the other burst images.  See [Issue #75](https://github.com/RhetTbull/osxphotos/issues/75).
 
 ## Implementation Notes
 
 This package works by creating a copy of the sqlite3 database that photos uses to store data about the photos library. The class PhotosDB then queries this database to extract information about the photos such as persons (faces identified in the photos), albums, keywords, etc.  If your library is large, the database can be hundreds of MB in size and the copy read then  can take many 10s of seconds to complete.  Once copied, the entire database is processed and an in-memory data structure is created meaning all subsequent accesses of the PhotosDB object occur much more quickly. 
 
 If apple changes the database format this will likely break.
-
-Apple does provide a framework ([PhotoKit](https://developer.apple.com/documentation/photokit?language=objc)) for querying the user's Photos library and I attempted to create the funcationality in this package using this framework but unfortunately PhotoKit does not provide access to much of the needed metadata (such as Faces/Persons) and Apple's System Integrity Protection (SIP) made the interface unreliable.  If you'd like to experiment with the PhotoKit interface, here's some sample [code](https://gist.github.com/RhetTbull/41cc85e5bdeb30f761147ce32fba5c94).  While copying the sqlite file is a bit kludgy, it allows osxphotos to provide access to all available metadata.
 
 For additional details about how osxphotos is implemented or if you would like to extend the code, see the [wiki](https://github.com/RhetTbull/osxphotos/wiki).
 
@@ -1693,9 +2284,11 @@ For additional details about how osxphotos is implemented or if you would like t
 - [Mako](https://www.makotemplates.org/)
 - [bpylist2](https://pypi.org/project/bpylist2/)
 - [pathvalidate](https://pypi.org/project/pathvalidate/)
+- [wurlitzer](https://pypi.org/project/wurlitzer/)
+- [toml](https://github.com/uiri/toml)
+
 
 ## Acknowledgements
 This project was originally inspired by [photo-export](https://github.com/patrikhson/photo-export) by Patrick Fältström,  Copyright (c) 2015 Patrik Fältström paf@frobbit.se
 
 I use [py-applescript](https://github.com/rdhyee/py-applescript) by "Raymond Yee / rdhyee" to interact with Photos. Rather than import this package, I included the entire package (which is published as public domain code) in a private package to prevent ambiguity with other applescript packages on PyPi. py-applescript uses a native bridge via PyObjC and is very fast compared to the other osascript based packages.
-

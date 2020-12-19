@@ -5,16 +5,13 @@ PhotosDB.photos() returns a list of PhotoInfo objects
 """
 
 import dataclasses
-import glob
+import datetime
 import json
 import logging
 import os
 import os.path
 import pathlib
-import subprocess
-import sys
 from datetime import timedelta, timezone
-from pprint import pformat
 
 import yaml
 
@@ -24,11 +21,14 @@ from .._constants import (
     _PHOTOS_4_ALBUM_KIND,
     _PHOTOS_4_ROOT_FOLDER,
     _PHOTOS_4_VERSION,
+    _PHOTOS_5_VERSION,
     _PHOTOS_5_ALBUM_KIND,
+    _PHOTOS_5_IMPORT_SESSION_ALBUM_KIND,
     _PHOTOS_5_SHARED_ALBUM_KIND,
     _PHOTOS_5_SHARED_PHOTO_PATH,
 )
-from ..albuminfo import AlbumInfo
+from ..albuminfo import AlbumInfo, ImportInfo
+from ..personinfo import FaceInfo, PersonInfo
 from ..phototemplate import PhotoTemplate
 from ..placeinfo import PlaceInfo4, PlaceInfo5
 from ..utils import _debug, _get_resource_loc, findfiles, get_preferred_uti_extension
@@ -53,6 +53,7 @@ class PhotoInfo:
         export,
         export2,
         _export_photo,
+        _exiftool_dict,
         _exiftool_json_sidecar,
         _write_exif_data,
         _write_sidecar,
@@ -60,6 +61,7 @@ class PhotoInfo:
         ExportResults,
     )
     from ._photoinfo_scoreinfo import score, ScoreInfo
+    from ._photoinfo_comments import comments, likes
 
     def __init__(self, db=None, uuid=None, info=None):
         self._uuid = uuid
@@ -69,11 +71,13 @@ class PhotoInfo:
     @property
     def filename(self):
         """ filename of the picture """
-        # sourcery off
-        if self.has_raw and self.raw_original:
-            # return name of the RAW file
-            # TODO: not yet implemented
-            return self._info["filename"]
+        if (
+            self._db._db_version <= _PHOTOS_4_VERSION
+            and self.has_raw
+            and self.raw_original
+        ):
+            # return the JPEG version as that's what Photos 5+ does
+            return self._info["raw_pair_info"]["filename"]
         else:
             return self._info["filename"]
 
@@ -81,27 +85,40 @@ class PhotoInfo:
     def original_filename(self):
         """ original filename of the picture 
             Photos 5 mangles filenames upon import """
-        return self._info["originalFilename"]
+        if (
+            self._db._db_version <= _PHOTOS_4_VERSION
+            and self.has_raw
+            and self.raw_original
+        ):
+            # return the JPEG version as that's what Photos 5+ does
+            original_name = self._info["raw_pair_info"]["originalFilename"]
+        else:
+            original_name = self._info["originalFilename"]
+        return original_name or self.filename
 
     @property
     def date(self):
         """ image creation date as timezone aware datetime object """
-        imagedate = self._info["imageDate"]
-        seconds = self._info["imageTimeZoneOffsetSeconds"] or 0
-        delta = timedelta(seconds=seconds)
-        tz = timezone(delta)
-        return imagedate.astimezone(tz=tz)
+        return self._info["imageDate"]
 
     @property
     def date_modified(self):
         """ image modification date as timezone aware datetime object
             or None if no modification date set """
-        imagedate = self._info["lastmodifieddate"]
-        if imagedate:
-            seconds = self._info["imageTimeZoneOffsetSeconds"] or 0
-            delta = timedelta(seconds=seconds)
-            tz = timezone(delta)
-            return imagedate.astimezone(tz=tz)
+
+        # Photos <= 4 provides no way to get date of adjustment and will update
+        # lastmodifieddate anytime photo database record is updated (e.g. adding tags)
+        # only report lastmodified date for Photos <=4 if photo is edited;
+        # even in this case, the date could be incorrect
+        if self.hasadjustments or self._db._db_version > _PHOTOS_4_VERSION:
+            imagedate = self._info["lastmodifieddate"]
+            if imagedate:
+                seconds = self._info["imageTimeZoneOffsetSeconds"] or 0
+                delta = timedelta(seconds=seconds)
+                tz = timezone(delta)
+                return imagedate.astimezone(tz=tz)
+            else:
+                return None
         else:
             return None
 
@@ -113,151 +130,203 @@ class PhotoInfo:
     @property
     def path(self):
         """ absolute path on disk of the original picture """
+        try:
+            return self._path
+        except AttributeError:
+            self._path = None
+            photopath = None
+            if self._info["isMissing"] == 1:
+                return photopath  # path would be meaningless until downloaded
 
-        photopath = None
-        if self._info["isMissing"] == 1:
-            return photopath  # path would be meaningless until downloaded
+            if self._db._db_version <= _PHOTOS_4_VERSION:
+                if self._info["has_raw"]:
+                    # return the path to JPEG even if RAW is original
+                    vol = (
+                        self._db._dbvolumes[self._info["raw_pair_info"]["volumeId"]]
+                        if self._info["raw_pair_info"]["volumeId"] is not None
+                        else None
+                    )
+                    if vol is not None:
+                        photopath = os.path.join(
+                            "/Volumes", vol, self._info["raw_pair_info"]["imagePath"]
+                        )
+                    else:
+                        photopath = os.path.join(
+                            self._db._masters_path,
+                            self._info["raw_pair_info"]["imagePath"],
+                        )
+                else:
+                    vol = self._info["volume"]
+                    if vol is not None:
+                        photopath = os.path.join(
+                            "/Volumes", vol, self._info["imagePath"]
+                        )
+                    else:
+                        photopath = os.path.join(
+                            self._db._masters_path, self._info["imagePath"]
+                        )
+                if not os.path.isfile(photopath):
+                    photopath = None
+                self._path = photopath
+                return photopath
 
-        if self._db._db_version <= _PHOTOS_4_VERSION:
-            vol = self._info["volume"]
-            if vol is not None:
-                photopath = os.path.join("/Volumes", vol, self._info["imagePath"])
+            if self._info["shared"]:
+                # shared photo
+                photopath = os.path.join(
+                    self._db._library_path,
+                    _PHOTOS_5_SHARED_PHOTO_PATH,
+                    self._info["directory"],
+                    self._info["filename"],
+                )
+                if not os.path.isfile(photopath):
+                    photopath = None
+                self._path = photopath
+                return photopath
+
+            if self._info["directory"].startswith("/"):
+                photopath = os.path.join(
+                    self._info["directory"], self._info["filename"]
+                )
             else:
                 photopath = os.path.join(
-                    self._db._masters_path, self._info["imagePath"]
+                    self._db._masters_path,
+                    self._info["directory"],
+                    self._info["filename"],
                 )
+            if not os.path.isfile(photopath):
+                photopath = None
+            self._path = photopath
             return photopath
-            # TODO: Is there a way to use applescript or PhotoKit to force the download in this
-
-        if self._info["shared"]:
-            # shared photo
-            photopath = os.path.join(
-                self._db._library_path,
-                _PHOTOS_5_SHARED_PHOTO_PATH,
-                self._info["directory"],
-                self._info["filename"],
-            )
-            return photopath
-
-        if self._info["directory"].startswith("/"):
-            photopath = os.path.join(self._info["directory"], self._info["filename"])
-        else:
-            photopath = os.path.join(
-                self._db._masters_path, self._info["directory"], self._info["filename"]
-            )
-        return photopath
 
     @property
     def path_edited(self):
         """ absolute path on disk of the edited picture """
         """ None if photo has not been edited """
 
-        # TODO: break this code into a _path_edited_4 and _path_edited_5
-        # version to simplify the big if/then; same for path_live_photo
+        try:
+            return self._path_edited
+        except AttributeError:
+            if self._db._db_version <= _PHOTOS_4_VERSION:
+                self._path_edited = self._path_edited_4()
+            else:
+                self._path_edited = self._path_edited_5()
+
+            return self._path_edited
+
+    def _path_edited_5(self):
+        """ return path_edited for Photos >= 5 """
+        # In Photos 5.0 / Catalina / MacOS 10.15:
+        # edited photos appear to always be converted to .jpeg and stored in
+        # library_name/resources/renders/X/UUID_1_201_a.jpeg
+        # where X = first letter of UUID
+        # and UUID = UUID of image
+        # this seems to be true even for photos not copied to Photos library and
+        # where original format was not jpg/jpeg
+        # if more than one edit, previous edit is stored as UUID_p.jpeg
+        #
+        # In Photos 6.0 / Big Sur, the edited image is a .heic if the photo isn't a jpeg,
+        # otherwise it's a jpeg.  It could also be a jpeg if photo library upgraded from earlier
+        # version.
+
+        if self._db._db_version < _PHOTOS_5_VERSION:
+            raise RuntimeError("Wrong database format!")
+
+        if self._info["hasAdjustments"]:
+            library = self._db._library_path
+            directory = self._uuid[0]  # first char of uuid
+            filename = None
+            if self._info["type"] == _PHOTO_TYPE:
+                # it's a photo
+                if self._db._photos_ver == 5:
+                    filename = f"{self._uuid}_1_201_a.jpeg"
+                else:
+                    # could be a heic or a jpeg
+                    if self.uti == "public.heic":
+                        filename = f"{self._uuid}_1_201_a.heic"
+                    else:
+                        filename = f"{self._uuid}_1_201_a.jpeg"
+            elif self._info["type"] == _MOVIE_TYPE:
+                # it's a movie
+                filename = f"{self._uuid}_2_0_a.mov"
+            else:
+                # don't know what it is!
+                logging.debug(f"WARNING: unknown type {self._info['type']}")
+                return None
+
+            photopath = os.path.join(
+                library, "resources", "renders", directory, filename
+            )
+
+            if not os.path.isfile(photopath):
+                logging.debug(
+                    f"edited file for UUID {self._uuid} should be at {photopath} but does not appear to exist"
+                )
+                photopath = None
+        else:
+            photopath = None
+
+        # TODO: might be possible for original/master to be missing but edit to still be there
+        # if self._info["isMissing"] == 1:
+        #     photopath = None  # path would be meaningless until downloaded
+
+        return photopath
+
+    def _path_edited_4(self):
+        """ return path_edited for Photos <= 4 """
+
+        if self._db._db_version > _PHOTOS_4_VERSION:
+            raise RuntimeError("Wrong database format!")
 
         photopath = None
-
-        if self._db._db_version <= _PHOTOS_4_VERSION:
-            if self._info["hasAdjustments"]:
-                edit_id = self._info["edit_resource_id"]
-                if edit_id is not None:
-                    library = self._db._library_path
-                    folder_id, file_id = _get_resource_loc(edit_id)
-                    # todo: is this always true or do we need to search file file_id under folder_id
-                    # figure out what kind it is and build filename
-                    filename = None
-                    if self._info["type"] == _PHOTO_TYPE:
-                        # it's a photo
-                        filename = f"fullsizeoutput_{file_id}.jpeg"
-                    elif self._info["type"] == _MOVIE_TYPE:
-                        # it's a movie
-                        filename = f"fullsizeoutput_{file_id}.mov"
-                    else:
-                        # don't know what it is!
-                        logging.debug(f"WARNING: unknown type {self._info['type']}")
-                        return None
-
-                    # photopath appears to usually be in "00" subfolder but
-                    # could be elsewhere--I haven't figured out this logic yet
-                    # first see if it's in 00
-                    photopath = os.path.join(
-                        library,
-                        "resources",
-                        "media",
-                        "version",
-                        folder_id,
-                        "00",
-                        filename,
-                    )
-
-                    if not os.path.isfile(photopath):
-                        rootdir = os.path.join(
-                            library, "resources", "media", "version", folder_id
-                        )
-
-                        for dirname, _, filelist in os.walk(rootdir):
-                            if filename in filelist:
-                                photopath = os.path.join(dirname, filename)
-                                break
-
-                    # check again to see if we found a valid file
-                    if not os.path.isfile(photopath):
-                        logging.debug(
-                            f"MISSING PATH: edited file for UUID {self._uuid} should be at {photopath} but does not appear to exist"
-                        )
-                        photopath = None
-                else:
-                    logging.debug(
-                        f"{self.uuid} hasAdjustments but edit_resource_id is None"
-                    )
-                    photopath = None
-            else:
-                photopath = None
-
-            # if self._info["isMissing"] == 1:
-            #     photopath = None  # path would be meaningless until downloaded
-        else:
-            # in Photos 5.0 / Catalina / MacOS 10.15:
-            # edited photos appear to always be converted to .jpeg and stored in
-            # library_name/resources/renders/X/UUID_1_201_a.jpeg
-            # where X = first letter of UUID
-            # and UUID = UUID of image
-            # this seems to be true even for photos not copied to Photos library and
-            # where original format was not jpg/jpeg
-            # if more than one edit, previous edit is stored as UUID_p.jpeg
-
-            if self._info["hasAdjustments"]:
+        if self._info["hasAdjustments"]:
+            edit_id = self._info["edit_resource_id"]
+            if edit_id is not None:
                 library = self._db._library_path
-                directory = self._uuid[0]  # first char of uuid
+                folder_id, file_id = _get_resource_loc(edit_id)
+                # todo: is this always true or do we need to search file file_id under folder_id
+                # figure out what kind it is and build filename
                 filename = None
                 if self._info["type"] == _PHOTO_TYPE:
                     # it's a photo
-                    filename = f"{self._uuid}_1_201_a.jpeg"
+                    filename = f"fullsizeoutput_{file_id}.jpeg"
                 elif self._info["type"] == _MOVIE_TYPE:
                     # it's a movie
-                    filename = f"{self._uuid}_2_0_a.mov"
+                    filename = f"fullsizeoutput_{file_id}.mov"
                 else:
                     # don't know what it is!
                     logging.debug(f"WARNING: unknown type {self._info['type']}")
                     return None
 
+                # photopath appears to usually be in "00" subfolder but
+                # could be elsewhere--I haven't figured out this logic yet
+                # first see if it's in 00
                 photopath = os.path.join(
-                    library, "resources", "renders", directory, filename
+                    library, "resources", "media", "version", folder_id, "00", filename
                 )
 
                 if not os.path.isfile(photopath):
+                    rootdir = os.path.join(
+                        library, "resources", "media", "version", folder_id
+                    )
+
+                    for dirname, _, filelist in os.walk(rootdir):
+                        if filename in filelist:
+                            photopath = os.path.join(dirname, filename)
+                            break
+
+                # check again to see if we found a valid file
+                if not os.path.isfile(photopath):
                     logging.debug(
-                        f"edited file for UUID {self._uuid} should be at {photopath} but does not appear to exist"
+                        f"MISSING PATH: edited file for UUID {self._uuid} should be at {photopath} but does not appear to exist"
                     )
                     photopath = None
             else:
+                logging.debug(
+                    f"{self.uuid} hasAdjustments but edit_resource_id is None"
+                )
                 photopath = None
-
-            # TODO: might be possible for original/master to be missing but edit to still be there
-            # if self._info["isMissing"] == 1:
-            #     photopath = None  # path would be meaningless until downloaded
-
-            # logging.debug(photopath)
+        else:
+            photopath = None
 
         return photopath
 
@@ -339,7 +408,32 @@ class PhotoInfo:
     @property
     def persons(self):
         """ list of persons in picture """
-        return self._info["persons"]
+        return [self._db._dbpersons_pk[pk]["fullname"] for pk in self._info["persons"]]
+
+    @property
+    def person_info(self):
+        """ list of PersonInfo objects for person in picture """
+        try:
+            return self._personinfo
+        except AttributeError:
+            self._personinfo = [
+                PersonInfo(db=self._db, pk=pk) for pk in self._info["persons"]
+            ]
+            return self._personinfo
+
+    @property
+    def face_info(self):
+        """ list of FaceInfo objects for faces in picture """
+        try:
+            return self._faceinfo
+        except AttributeError:
+            try:
+                faces = self._db._db_faceinfo_uuid[self._uuid]
+                self._faceinfo = [FaceInfo(db=self._db, pk=pk) for pk in faces]
+            except KeyError:
+                # no faces
+                self._faceinfo = []
+            return self._faceinfo
 
     @property
     def albums(self):
@@ -364,6 +458,19 @@ class PhotoInfo:
                 AlbumInfo(db=self._db, uuid=album) for album in album_uuids
             ]
             return self._album_info
+
+    @property
+    def import_info(self):
+        """ ImportInfo object representing import session for the photo or None if no import session """
+        try:
+            return self._import_info
+        except AttributeError:
+            self._import_info = (
+                ImportInfo(db=self._db, uuid=self._info["import_uuid"])
+                if self._info["import_uuid"] is not None
+                else None
+            )
+            return self._import_info
 
     @property
     def keywords(self):
@@ -441,7 +548,40 @@ class PhotoInfo:
         """ Returns Uniform Type Identifier (UTI) for the image
             for example: public.jpeg or com.apple.quicktime-movie
         """
-        return self._info["UTI"]
+        if self._db._db_version <= _PHOTOS_4_VERSION:
+            if self.hasadjustments:
+                return self._info["UTI_edited"]
+            elif self.has_raw and self.raw_original:
+                # return UTI of the non-raw image to match Photos 5+ behavior
+                return self._info["raw_pair_info"]["UTI"]
+            else:
+                return self._info["UTI"]
+        else:
+            return self._info["UTI"]
+
+    @property
+    def uti_original(self):
+        """ Returns Uniform Type Identifier (UTI) for the original image
+            for example: public.jpeg or com.apple.quicktime-movie
+        """
+        if self._db._db_version <= _PHOTOS_4_VERSION and self._info["has_raw"]:
+            return self._info["raw_pair_info"]["UTI"]
+        elif self.shared:
+            # TODO: need reliable way to get original UTI for shared
+            return self.uti
+        else:
+            return self._info["UTI_original"]
+
+    @property
+    def uti_edited(self):
+        """ Returns Uniform Type Identifier (UTI) for the edited image 
+            if the photo has been edited, otherwise None; 
+            for example: public.jpeg 
+        """
+        if self._db._db_version >= _PHOTOS_5_VERSION:
+            return self.uti if self.hasadjustments else None
+        else:
+            return self._info["UTI_edited"]
 
     @property
     def uti_raw(self):
@@ -632,15 +772,55 @@ class PhotoInfo:
 
     @property
     def has_raw(self):
-        """ returns True if photo has an associated RAW image, otherwise False """
+        """ returns True if photo has an associated raw image (that is, it's a RAW+JPEG pair), otherwise False """
         return self._info["has_raw"]
 
     @property
+    def israw(self):
+        """ returns True if photo is a raw image. For images with an associated RAW+JPEG pair, see has_raw """
+        return "raw-image" in self.uti_original
+
+    @property
     def raw_original(self):
-        """ returns True if associated RAW image and the RAW image is selected in Photos
+        """ returns True if associated raw image and the raw image is selected in Photos
             via "Use RAW as Original "
             otherwise returns False """
         return self._info["raw_is_original"]
+
+    @property
+    def height(self):
+        """ returns height of the current photo version in pixels """
+        return self._info["height"]
+
+    @property
+    def width(self):
+        """ returns width of the current photo version in pixels """
+        return self._info["width"]
+
+    @property
+    def orientation(self):
+        """ returns EXIF orientation of the current photo version as int """
+        return self._info["orientation"]
+
+    @property
+    def original_height(self):
+        """ returns height of the original photo version in pixels """
+        return self._info["original_height"]
+
+    @property
+    def original_width(self):
+        """ returns width of the original photo version in pixels """
+        return self._info["original_width"]
+
+    @property
+    def original_orientation(self):
+        """ returns EXIF orientation of the original photo version as int """
+        return self._info["original_orientation"]
+
+    @property
+    def original_filesize(self):
+        """ returns filesize of original photo in bytes as int """
+        return self._info["original_filesize"]
 
     def render_template(
         self,
@@ -649,6 +829,9 @@ class PhotoInfo:
         path_sep=None,
         expand_inplace=False,
         inplace_sep=None,
+        filename=False,
+        dirname=False,
+        replacement=":",
     ):
         """Renders a template string for PhotoInfo instance using PhotoTemplate
 
@@ -661,6 +844,9 @@ class PhotoInfo:
                 instead of returning individual strings
             inplace_sep: optional string to use as separator between multi-valued keywords
                 with expand_inplace; default is ','
+            filename: if True, template output will be sanitized to produce valid file name
+            dirname: if True, template output will be sanitized to produce valid directory name 
+            replacement: str, value to replace any illegal file path characters with; default = ":"
         
         Returns:
             ([rendered_strings], [unmatched]): tuple of list of rendered strings and list of unmatched template values
@@ -672,6 +858,9 @@ class PhotoInfo:
             path_sep=path_sep,
             expand_inplace=expand_inplace,
             inplace_sep=inplace_sep,
+            filename=filename,
+            dirname=dirname,
+            replacement=replacement,
         )
 
     @property
@@ -688,7 +877,7 @@ class PhotoInfo:
         """ Return list of album UUIDs this photo is found in
         
             Filters out albums in the trash and any special album types
-        
+
         Returns: list of album UUIDs 
         """
         if self._db._db_version <= _PHOTOS_4_VERSION:
@@ -771,25 +960,33 @@ class PhotoInfo:
             "exif": exif,
             "score": score,
             "intrash": self.intrash,
+            "height": self.height,
+            "width": self.width,
+            "orientation": self.orientation,
+            "original_height": self.original_height,
+            "original_width": self.original_width,
+            "original_orientation": self.original_orientation,
+            "original_filesize": self.original_filesize,
         }
         return yaml.dump(info, sort_keys=False)
 
-    def json(self):
-        """ return JSON representation """
+    def asdict(self):
+        """ return dict representation """
 
-        date_modified_iso = (
-            self.date_modified.isoformat() if self.date_modified else None
-        )
         folders = {album.title: album.folder_names for album in self.album_info}
         exif = dataclasses.asdict(self.exif_info) if self.exif_info else {}
-        place = self.place.as_dict() if self.place else {}
+        place = self.place.asdict() if self.place else {}
         score = dataclasses.asdict(self.score) if self.score else {}
+        comments = [comment.asdict() for comment in self.comments]
+        likes = [like.asdict() for like in self.likes]
+        faces = [face.asdict() for face in self.face_info]
 
-        pic = {
+        return {
+            "library": self._db._library_path,
             "uuid": self.uuid,
             "filename": self.filename,
             "original_filename": self.original_filename,
-            "date": self.date.isoformat(),
+            "date": self.date,
             "description": self.description,
             "title": self.title,
             "keywords": self.keywords,
@@ -798,6 +995,7 @@ class PhotoInfo:
             "albums": self.albums,
             "folders": folders,
             "persons": self.persons,
+            "faces": faces,
             "path": self.path,
             "ismissing": self.ismissing,
             "hasadjustments": self.hasadjustments,
@@ -811,12 +1009,13 @@ class PhotoInfo:
             "isphoto": self.isphoto,
             "ismovie": self.ismovie,
             "uti": self.uti,
+            "uti_original": self.uti_original,
             "burst": self.burst,
             "live_photo": self.live_photo,
             "path_live_photo": self.path_live_photo,
             "iscloudasset": self.iscloudasset,
             "incloud": self.incloud,
-            "date_modified": date_modified_iso,
+            "date_modified": self.date_modified,
             "portrait": self.portrait,
             "screenshot": self.screenshot,
             "slow_mo": self.slow_mo,
@@ -825,14 +1024,33 @@ class PhotoInfo:
             "selfie": self.selfie,
             "panorama": self.panorama,
             "has_raw": self.has_raw,
+            "israw": self.israw,
+            "raw_original": self.raw_original,
             "uti_raw": self.uti_raw,
             "path_raw": self.path_raw,
             "place": place,
             "exif": exif,
             "score": score,
             "intrash": self.intrash,
+            "height": self.height,
+            "width": self.width,
+            "orientation": self.orientation,
+            "original_height": self.original_height,
+            "original_width": self.original_width,
+            "original_orientation": self.original_orientation,
+            "original_filesize": self.original_filesize,
+            "comments": comments,
+            "likes": likes,
         }
-        return json.dumps(pic)
+
+    def json(self):
+        """ Return JSON representation """
+
+        def default(o):
+            if isinstance(o, (datetime.date, datetime.datetime)):
+                return o.isoformat()
+
+        return json.dumps(self.asdict(), sort_keys=True, default=default)
 
     def __eq__(self, other):
         """ Compare two PhotoInfo objects for equality """

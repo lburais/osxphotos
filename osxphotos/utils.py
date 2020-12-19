@@ -10,14 +10,15 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import urllib.parse
 from plistlib import load as plistload
 
 import CoreFoundation
 import CoreServices
 import objc
-from Foundation import *
 
+from ._constants import UNICODE_FORMAT
 from .fileutil import FileUtil
 
 _DEBUG = False
@@ -54,6 +55,11 @@ def _set_debug(debug):
 def _debug():
     """ returns True if debugging turned on (via _set_debug), otherwise, false """
     return _DEBUG
+
+
+def noop(*args, **kwargs):
+    """ do nothing (no operation) """
+    pass
 
 
 def _get_os_version():
@@ -195,7 +201,7 @@ def get_last_library_path():
         # pylint: disable=no-member
         # pylint: disable=undefined-variable
         photosurl = CoreFoundation.CFURLCreateByResolvingBookmarkData(
-            kCFAllocatorDefault, photosurlref, 0, None, None, None, None
+            CoreFoundation.kCFAllocatorDefault, photosurlref, 0, None, None, None, None
         )
 
         # the CFURLRef we got is a sruct that python treats as an array
@@ -262,7 +268,10 @@ def get_preferred_uti_extension(uti):
 
 def findfiles(pattern, path_):
     """Returns list of filenames from path_ matched by pattern
-       shell pattern. Matching is case-insensitive."""
+       shell pattern. Matching is case-insensitive.
+       If 'path_' is invalid/doesn't exist, returns []."""
+    if not os.path.isdir(path_):
+        return []
     # See: https://gist.github.com/techtonik/5694830
 
     rule = re.compile(fnmatch.translate(pattern), re.IGNORECASE)
@@ -349,3 +358,39 @@ def _db_is_locked(dbname):
 #     attr = xattr.xattr(filepath)
 #     uuid_bytes = bytes(uuid, 'utf-8')
 #     attr.set(OSXPHOTOS_XATTR_UUID, uuid_bytes)
+
+
+def normalize_unicode(value):
+    """ normalize unicode data """
+    if value is None:
+        return None
+
+    if not isinstance(value, str):
+        raise ValueError("value must be str")
+    return unicodedata.normalize(UNICODE_FORMAT, value)
+
+
+def increment_filename(filepath):
+    """ Return filename (1).ext, etc if filename.ext exists
+
+        If file exists in filename's parent folder with same stem as filename, 
+        add (1), (2), etc. until a non-existing filename is found.
+
+    Args:
+        filepath: str; full path, including file name
+
+    Returns:
+        new filepath (or same if not incremented)
+
+    Note: This obviously is subject to race condition so using with caution.
+    """
+    dest = pathlib.Path(str(filepath))
+    count = 1
+    dest_files = findfiles(f"{dest.stem}*", str(dest.parent))
+    dest_files = [pathlib.Path(f).stem.lower() for f in dest_files]
+    dest_new = dest.stem
+    while dest_new.lower() in dest_files:
+        dest_new = f"{dest.stem} ({count})"
+        count += 1
+    dest = dest.parent / f"{dest_new}{dest.suffix}"
+    return str(dest)

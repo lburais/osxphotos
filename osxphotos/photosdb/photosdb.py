@@ -8,14 +8,13 @@ import os
 import os.path
 import pathlib
 import platform
-import sqlite3
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pprint import pformat
-from shutil import copyfile
 
 from .._constants import (
+    _DB_TABLE_NAMES,
     _MOVIE_TYPE,
     _PHOTO_TYPE,
     _PHOTOS_3_VERSION,
@@ -25,15 +24,18 @@ from .._constants import (
     _PHOTOS_4_VERSION,
     _PHOTOS_5_ALBUM_KIND,
     _PHOTOS_5_FOLDER_KIND,
+    _PHOTOS_5_IMPORT_SESSION_ALBUM_KIND,
     _PHOTOS_5_ROOT_FOLDER_KIND,
     _PHOTOS_5_SHARED_ALBUM_KIND,
-    _PHOTOS_5_VERSION,
-    _TESTED_DB_VERSIONS,
     _TESTED_OS_VERSIONS,
     _UNKNOWN_PERSON,
+    TIME_DELTA,
 )
 from .._version import __version__
-from ..albuminfo import AlbumInfo, FolderInfo
+from ..albuminfo import AlbumInfo, FolderInfo, ImportInfo
+from ..datetime_utils import datetime_has_tz, datetime_naive_to_local
+from ..fileutil import FileUtil
+from ..personinfo import PersonInfo
 from ..photoinfo import PhotoInfo
 from ..utils import (
     _check_file_exists,
@@ -42,8 +44,10 @@ from ..utils import (
     _get_os_version,
     _open_sql_file,
     get_last_library_path,
+    noop,
+    normalize_unicode,
 )
-
+from .photosdb_utils import get_db_model_version, get_db_version
 
 # TODO: Add test for imageTimeZoneOffsetSeconds = None
 # TODO: Add test for __str__
@@ -55,6 +59,7 @@ class PhotosDB:
 
     # import additional methods
     from ._photosdb_process_exif import _process_exifinfo
+    from ._photosdb_process_faceinfo import _process_faceinfo
     from ._photosdb_process_searchinfo import (
         _process_searchinfo,
         labels,
@@ -63,12 +68,19 @@ class PhotosDB:
         labels_normalized_as_dict,
     )
     from ._photosdb_process_scoreinfo import _process_scoreinfo
+    from ._photosdb_process_comments import _process_comments
 
-    def __init__(self, *dbfile_, dbfile=None):
-        """ create a new PhotosDB object 
-            path to photos library or database may be specified EITHER as first argument or as named argument dbfile=path 
-            specify full path to photos library or photos.db as first argument 
-            specify path to photos library or photos.db using named argument dbfile=path """
+    def __init__(self, dbfile=None, verbose=None):
+        """ Create a new PhotosDB object.
+
+        Args:
+            dbfile: specify full path to photos library or photos.db; if None, will attempt to locate last library opened by Photos.
+            verbose: optional callable function to use for printing verbose text during processing; if None (default), does not print output.
+        
+        Raises:
+            FileNotFoundError if dbfile is not a valid Photos library.
+            TypeError if verbose is not None and not callable.
+        """
 
         # Check OS version
         system = platform.system()
@@ -80,6 +92,12 @@ class PhotosDB:
                 f"you have {system}, OS version: {major}"
             )
 
+        if verbose is None:
+            verbose = noop
+        elif not callable(verbose):
+            raise TypeError("verbose must be callable")
+        self._verbose = verbose
+
         # create a temporary directory
         # tempfile.TemporaryDirectory gets cleaned up when the object does
         self._tempdir = tempfile.TemporaryDirectory(prefix="osxphotos_")
@@ -87,6 +105,7 @@ class PhotosDB:
 
         # set up the data structures used to store all the Photo database info
 
+        # TODO: I don't think these keywords flags are actually used
         # if True, will treat persons as keywords when exporting metadata
         self.use_persons_as_keywords = False
 
@@ -122,17 +141,28 @@ class PhotosDB:
         # currently used to get information on RAW images
         self._dbphotos_master = {}
 
+        # Dict with information about all persons by person PK
+        # key is person PK, value is dict with info about each person
+        # e.g. {3: {"pk": 3, "fullname": "Maria Smith"...}}
+        self._dbpersons_pk = {}
+
+        # Dict with information about all persons by person fullname
+        # key is person PK, value is list of person PKs with fullname
+        # there may be more than one person PK with the same fullname
+        # e.g. {"Maria Smith": [1, 2]}
+        self._dbpersons_fullname = {}
+
         # Dict with information about all persons/photos by uuid
-        # key is photo UUID, value is list of face names in that photo
+        # key is photo UUID, value is list of person primary keys of persons in the photo
         # Note: Photos 5 identifies faces even if not given a name
         # and those are labeled by process_database as _UNKNOWN_
-        # e.g. {'1EB2B765-0765-43BA-A90C-0D0580E6172C': ['Katie', '_UNKNOWN_', 'Suzy']}
+        # e.g. {'1EB2B765-0765-43BA-A90C-0D0580E6172C': [1, 3, 5]}
         self._dbfaces_uuid = {}
 
-        # Dict with information about all persons/photos by person
-        # key is person name, value is list of photo UUIDs
-        # e.g. {'Maria': ['E9BC5C36-7CD1-40A1-A72B-8B8FAC227D51']}
-        self._dbfaces_person = {}
+        # Dict with information about detected faces by person primary key
+        # key is person pk, value is list of photo UUIDs
+        # e.g. {3: ['E9BC5C36-7CD1-40A1-A72B-8B8FAC227D51']}
+        self._dbfaces_pk = {}
 
         # Dict with information about all keywords/photos by uuid
         # key is photo uuid and value is list of keywords
@@ -156,8 +186,8 @@ class PhotosDB:
         self._dbalbums_pk = {}
 
         # Dict with information about all albums/photos by album
-        # key is album UUID, value is list of photo UUIDs contained in that album
-        # e.g. {'0C514A98-7B77-4E4F-801B-364B7B65EAFA': ['1EB2B765-0765-43BA-A90C-0D0580E6172C']}
+        # key is album UUID, value is list of tuples of (photo UUID, sort order) contained in that album
+        # e.g. {'0C514A98-7B77-4E4F-801B-364B7B65EAFA': [('1EB2B765-0765-43BA-A90C-0D0580E6172C', 1024)]}
         self._dbalbums_album = {}
 
         # Dict with information about album details
@@ -200,25 +230,7 @@ class PhotosDB:
         if _debug():
             logging.debug(f"dbfile = {dbfile}")
 
-        # get the path to photos library database
-        if dbfile_:
-            # got a library path as argument
-            if dbfile:
-                # shouldn't pass via both *args and dbfile=
-                raise TypeError(
-                    f"photos database path must be specified as argument or "
-                    f"named parameter dbfile but not both: args: {dbfile_}, dbfile: {dbfile}",
-                    dbfile_,
-                    dbfile,
-                )
-            elif len(dbfile_) == 1:
-                dbfile = dbfile_[0]
-            else:
-                raise TypeError(
-                    f"__init__ takes only a single argument (photos database path): {dbfile_}",
-                    dbfile_,
-                )
-        elif dbfile is None:
+        if dbfile is None:
             dbfile = get_last_library_path()
             if dbfile is None:
                 # get_last_library_path must have failed to find library
@@ -246,14 +258,17 @@ class PhotosDB:
         # or photosanalysisd
         self._dbfile = self._dbfile_actual = self._tmp_db = os.path.abspath(dbfile)
 
+        verbose(f"Processing database {self._dbfile}")
+
         # if database is exclusively locked, make a copy of it and use the copy
         # Photos maintains an exclusive lock on the database file while Photos is open
         # photoanalysisd sometimes maintains this lock even after Photos is closed
         # In those cases, make a temp copy of the file for sqlite3 to read
         if _db_is_locked(self._dbfile):
+            verbose(f"Database locked, creating temporary copy.")
             self._tmp_db = self._copy_db_file(self._dbfile)
 
-        self._db_version = self._get_db_version(self._tmp_db)
+        self._db_version = get_db_version(self._tmp_db)
 
         # If Photos >= 5, actual data isn't in photos.db but in Photos.sqlite
         if int(self._db_version) > int(_PHOTOS_4_VERSION):
@@ -263,8 +278,10 @@ class PhotosDB:
                 raise FileNotFoundError(f"dbfile {dbfile} does not exist", dbfile)
             else:
                 self._dbfile_actual = self._tmp_db = dbfile
+                verbose(f"Processing database {self._dbfile_actual}")
                 # if database is exclusively locked, make a copy of it and use the copy
                 if _db_is_locked(self._dbfile_actual):
+                    verbose(f"Database locked, creating temporary copy.")
                     self._tmp_db = self._copy_db_file(self._dbfile_actual)
 
             if _debug():
@@ -303,7 +320,13 @@ class PhotosDB:
     @property
     def persons_as_dict(self):
         """ return persons as dict of person, count in reverse sorted order (descending) """
-        persons = {k: len(self._dbfaces_person[k]) for k in self._dbfaces_person.keys()}
+        persons = {}
+        for pk in self._dbfaces_pk:
+            fullname = self._dbpersons_pk[pk]["fullname"]
+            try:
+                persons[fullname] += len(self._dbfaces_pk[pk])
+            except KeyError:
+                persons[fullname] = len(self._dbfaces_pk[pk])
         persons = dict(sorted(persons.items(), key=lambda kv: kv[1], reverse=True))
         return persons
 
@@ -352,8 +375,19 @@ class PhotosDB:
     @property
     def persons(self):
         """ return list of persons found in photos database """
-        persons = self._dbfaces_person.keys()
+        persons = {self._dbpersons_pk[k]["fullname"] for k in self._dbfaces_pk}
         return list(persons)
+
+    @property
+    def person_info(self):
+        """ return list of PersonInfo objects for each person in the photos database """
+        try:
+            return self._person_info
+        except AttributeError:
+            self._person_info = [
+                PersonInfo(db=self, pk=pk) for pk in self._dbpersons_pk
+            ]
+            return self._person_info
 
     @property
     def folder_info(self):
@@ -453,6 +487,18 @@ class PhotosDB:
             return self._albums_shared
 
     @property
+    def import_info(self):
+        """ return list of ImportInfo objects for each import session in the database """
+        try:
+            return self._import_info
+        except AttributeError:
+            self._import_info = [
+                ImportInfo(db=self, uuid=album)
+                for album in self._get_album_uuids(import_session=True)
+            ]
+            return self._import_info
+
+    @property
     def db_version(self):
         """ return the database version as stored in LiGlobals table """
         return self._db_version
@@ -481,17 +527,18 @@ class PhotosDB:
         """ If sqlite shared memory and write-ahead log files exist, those are copied too """
         # required because python's sqlite3 implementation can't read a locked file
         # _, suffix = os.path.splitext(fname)
+        dest_name = dest_path = ""
         try:
             dest_name = pathlib.Path(fname).name
             dest_path = os.path.join(self._tempdir_name, dest_name)
-            copyfile(fname, dest_path)
+            FileUtil.copy(fname, dest_path)
             # copy write-ahead log and shared memory files (-wal and -shm) files if they exist
             if os.path.exists(f"{fname}-wal"):
-                copyfile(f"{fname}-wal", f"{dest_path}-wal")
+                FileUtil.copy(f"{fname}-wal", f"{dest_path}-wal")
             if os.path.exists(f"{fname}-shm"):
-                copyfile(f"{fname}-shm", f"{dest_path}-shm")
+                FileUtil.copy(f"{fname}-shm", f"{dest_path}-shm")
         except:
-            print("Error copying " + fname + " to " + dest_path, file=sys.stderr)
+            print(f"Error copying{fname} to {dest_path}", file=sys.stderr)
             raise Exception
 
         if _debug():
@@ -499,78 +546,179 @@ class PhotosDB:
 
         return dest_path
 
-    def _get_db_version(self, db_file):
-        """ Gets the Photos DB version from LiGlobals table
+    # NOTE: This method seems to cause problems with applescript
+    # Bummer...would'be been nice to avoid copying the DB
+    # def _link_db_file(self, fname):
+    #     """ links the sqlite database file to a temp file """
+    #     """ returns the name of the temp file """
+    #     """ If sqlite shared memory and write-ahead log files exist, those are copied too """
+    #     # required because python's sqlite3 implementation can't read a locked file
+    #     # _, suffix = os.path.splitext(fname)
+    #     dest_name = dest_path = ""
+    #     try:
+    #         dest_name = pathlib.Path(fname).name
+    #         dest_path = os.path.join(self._tempdir_name, dest_name)
+    #         FileUtil.hardlink(fname, dest_path)
+    #         # link write-ahead log and shared memory files (-wal and -shm) files if they exist
+    #         if os.path.exists(f"{fname}-wal"):
+    #             FileUtil.hardlink(f"{fname}-wal", f"{dest_path}-wal")
+    #         if os.path.exists(f"{fname}-shm"):
+    #             FileUtil.hardlink(f"{fname}-shm", f"{dest_path}-shm")
+    #     except:
+    #         print("Error linking " + fname + " to " + dest_path, file=sys.stderr)
+    #         raise Exception
 
-        Args:
-            db_file: path to database file containing LiGlobals table
+    #     if _debug():
+    #         logging.debug(dest_path)
 
-        Returns: version as str
-        """
-
-        version = None
-
-        (conn, c) = _open_sql_file(db_file)
-
-        # get database version
-        c.execute(
-            "SELECT value from LiGlobals where LiGlobals.keyPath is 'libraryVersion'"
-        )
-        version = c.fetchone()[0]
-        conn.close()
-
-        if version not in _TESTED_DB_VERSIONS:
-            print(
-                f"WARNING: Only tested on database versions [{', '.join(_TESTED_DB_VERSIONS)}]"
-                + f" You have database version={version} which has not been tested"
-            )
-
-        return version
+    #     return dest_path
 
     def _process_database4(self):
         """ process the Photos database to extract info
             works on Photos version <= 4.0 """
 
-        # Epoch is Jan 1, 2001
-        td = (datetime(2001, 1, 1, 0, 0) - datetime(1970, 1, 1, 0, 0)).total_seconds()
+        verbose = self._verbose
+        verbose("Processing database.")
+        verbose(f"Database version: {self._db_version}.")
 
         (conn, c) = _open_sql_file(self._tmp_db)
 
-        # Look for all combinations of persons and pictures
+        # get info to associate persons with photos
+        # then get detected faces in each photo and link to persons
+        verbose("Processing persons in photos.")
         c.execute(
-            """ select RKPerson.name, RKVersion.uuid from RKFace, RKPerson, RKVersion, RKMaster 
-                where RKFace.personID = RKperson.modelID and RKVersion.modelId = RKFace.ImageModelId 
-                and RKVersion.masterUuid = RKMaster.uuid  
-                and RKVersion.isInTrash = 0 """
+            """ SELECT
+                RKPerson.modelID,
+                RKPerson.uuid,
+                RKPerson.name,
+                RKPerson.faceCount,
+                RKPerson.displayName,
+                RKPerson.representativeFaceId
+                FROM RKPerson
+            """
         )
+
+        # 0     RKPerson.modelID,
+        # 1     RKPerson.uuid,
+        # 2     RKPerson.name,
+        # 3     RKPerson.faceCount,
+        # 4     RKPerson.displayName
+        # 5     RKPerson.representativeFaceId
+
         for person in c:
-            if person[0] is None:
-                continue
-            if not person[1] in self._dbfaces_uuid:
-                self._dbfaces_uuid[person[1]] = []
-            if not person[0] in self._dbfaces_person:
-                self._dbfaces_person[person[0]] = []
-            self._dbfaces_uuid[person[1]].append(person[0])
-            self._dbfaces_person[person[0]].append(person[1])
+            pk = person[0]
+            fullname = person[2] if person[2] is not None else _UNKNOWN_PERSON
+            self._dbpersons_pk[pk] = {
+                "pk": pk,
+                "uuid": person[1],
+                "fullname": fullname,
+                "facecount": person[3],
+                "keyface": person[5],
+                "displayname": person[4],
+                "photo_uuid": None,
+                "keyface_uuid": None,
+            }
+            try:
+                self._dbpersons_fullname[fullname].append(pk)
+            except KeyError:
+                self._dbpersons_fullname[fullname] = [pk]
+
+        # get info on key face
+        c.execute(
+            """ SELECT
+                RKPerson.modelID,
+                RKPerson.representativeFaceId,
+                RKVersion.uuid,
+                RKFace.uuid
+                FROM RKPerson, RKFace, RKVersion
+                WHERE 
+                RKFace.modelId = RKPerson.representativeFaceId AND
+                RKVersion.modelId = RKFace.ImageModelId
+            """
+        )
+
+        # 0     RKPerson.modelID,
+        # 1     RKPerson.representativeFaceId
+        # 2     RKVersion.uuid,
+        # 3     RKFace.uuid
+
+        for person in c:
+            pk = person[0]
+            try:
+                self._dbpersons_pk[pk]["photo_uuid"] = person[2]
+                self._dbpersons_pk[pk]["keyface_uuid"] = person[3]
+            except KeyError:
+                logging.debug(f"Unexpected KeyError _dbpersons_pk[{pk}]")
+
+        # get information on detected faces
+        verbose("Processing detected faces in photos.")
+        c.execute(
+            """ SELECT 
+                RKPerson.modelID,
+                RKVersion.uuid 
+                FROM 
+                RKFace, RKPerson, RKVersion, RKMaster 
+                WHERE 
+                RKFace.personID = RKperson.modelID AND 
+                RKVersion.modelId = RKFace.ImageModelId AND
+                RKVersion.masterUuid = RKMaster.uuid  
+            """
+        )
+
+        # 0     RKPerson.modelID
+        # 1     RKVersion.uuid
+
+        for face in c:
+            pk = face[0]
+            uuid = face[1]
+            try:
+                self._dbfaces_uuid[uuid].append(pk)
+            except KeyError:
+                self._dbfaces_uuid[uuid] = [pk]
+
+            try:
+                self._dbfaces_pk[pk].append(uuid)
+            except KeyError:
+                self._dbfaces_pk[pk] = [uuid]
+
+        if _debug():
+            logging.debug(f"Finished walking through persons")
+            logging.debug(pformat(self._dbpersons_pk))
+            logging.debug(pformat(self._dbpersons_fullname))
+            logging.debug(pformat(self._dbfaces_pk))
+            logging.debug(pformat(self._dbfaces_uuid))
 
         # Get info on albums
+        verbose("Processing albums.")
         c.execute(
-            """ select 
+            """ SELECT 
                 RKAlbum.uuid, 
-                RKVersion.uuid 
-                from RKAlbum, RKVersion, RKAlbumVersion 
-                where RKAlbum.modelID = RKAlbumVersion.albumId and 
-                RKAlbumVersion.versionID = RKVersion.modelId  
-                and RKVersion.isInTrash = 0 """
+                RKVersion.uuid,
+                RKCustomSortOrder.orderNumber
+                FROM RKVersion
+                JOIN RKCustomSortOrder on RKCustomSortOrder.objectUuid = RKVersion.uuid
+                JOIN RKAlbum on RKAlbum.uuid = RKCustomSortOrder.containerUuid
+            """
         )
+
+        # 0     RKAlbum.uuid,
+        # 1     RKVersion.uuid,
+        # 2     RKCustomSortOrder.orderNumber
+
         for album in c:
             # store by uuid in _dbalbums_uuid and by album in _dbalbums_album
-            if not album[1] in self._dbalbums_uuid:
-                self._dbalbums_uuid[album[1]] = []
-            if not album[0] in self._dbalbums_album:
-                self._dbalbums_album[album[0]] = []
-            self._dbalbums_uuid[album[1]].append(album[0])
-            self._dbalbums_album[album[0]].append(album[1])
+            album_uuid = album[0]
+            photo_uuid = album[1]
+            sort_order = album[2]
+            try:
+                self._dbalbums_uuid[photo_uuid].append(album_uuid)
+            except KeyError:
+                self._dbalbums_uuid[photo_uuid] = [album_uuid]
+
+            try:
+                self._dbalbums_album[album_uuid].append((photo_uuid, sort_order))
+            except KeyError:
+                self._dbalbums_album[album_uuid] = [(photo_uuid, sort_order)]
 
         # now get additional details about albums
         c.execute(
@@ -582,7 +730,8 @@ class PhotosDB:
                 isInTrash, 
                 folderUuid,
                 albumType, 
-                albumSubclass 
+                albumSubclass,
+                createDate 
                 FROM RKAlbum """
         )
 
@@ -595,11 +744,12 @@ class PhotosDB:
         # 5:    folderUuid
         # 6:    albumType
         # 7:    albumSubclass -- if 3, normal user album
+        # 8:    createDate
 
         for album in c:
             self._dbalbum_details[album[0]] = {
                 "_uuid": album[0],
-                "title": album[1],
+                "title": normalize_unicode(album[1]),
                 "cloudlibrarystate": album[2],
                 "cloudidentifier": album[3],
                 "intrash": False if album[4] == 0 else True,
@@ -612,6 +762,9 @@ class PhotosDB:
                 "albumSubclass": album[7],
                 # for compatability with Photos 5 where album kind is ZKIND
                 "kind": album[7],
+                "creation_date": album[8],
+                "start_date": None,  # Photos 5 only
+                "end_date": None,  # Photos 5 only
             }
 
         # get details about folders
@@ -643,7 +796,7 @@ class PhotosDB:
             self._dbfolder_details[uuid] = {
                 "_uuid": row[0],
                 "modelId": row[1],
-                "name": row[2],
+                "name": normalize_unicode(row[2]),
                 "isMagic": row[3],
                 "intrash": row[4],
                 "folderType": row[5],
@@ -679,13 +832,19 @@ class PhotosDB:
             logging.debug(pformat(self._dbfolder_details))
 
         # Get info on keywords
+        verbose("Processing keywords.")
         c.execute(
-            """ select RKKeyword.name, RKVersion.uuid, RKMaster.uuid from 
+            """ SELECT
+                RKKeyword.name, 
+                RKVersion.uuid, 
+                RKMaster.uuid 
+                FROM 
                 RKKeyword, RKKeywordForVersion, RKVersion, RKMaster 
-                where RKKeyword.modelId = RKKeyWordForVersion.keywordID and 
-                RKVersion.modelID = RKKeywordForVersion.versionID and 
-                RKMaster.uuid = RKVersion.masterUuid and 
-                RKVersion.isInTrash = 0 """
+                WHERE 
+                RKKeyword.modelId = RKKeyWordForVersion.keywordID AND 
+                RKVersion.modelID = RKKeywordForVersion.versionID AND 
+                RKMaster.uuid = RKVersion.masterUuid
+            """
         )
         for keyword in c:
             if not keyword[1] in self._dbkeywords_uuid:
@@ -701,6 +860,7 @@ class PhotosDB:
             self._dbvolumes[vol[0]] = vol[1]
 
         # Get photo details
+        verbose("Processing photo details.")
         if self._db_version < _PHOTOS_3_VERSION:
             # Photos < 3.0 doesn't have RKVersion.selfPortrait (selfie)
             c.execute(
@@ -716,7 +876,15 @@ class PhotosDB:
                     RKVersion.rawMasterUuid,
                     RKVersion.nonRawMasterUuid,
                     RKMaster.alternateMasterUuid,
-                    RKVersion.isInTrash 
+                    RKVersion.isInTrash,
+                    RKVersion.processedHeight, 
+                    RKVersion.processedWidth, 
+                    RKVersion.orientation,
+                    RKMaster.height,
+                    RKMaster.width, 
+                    RKMaster.orientation,
+                    RKMaster.fileSize,
+                    RKVersion.subType
                     FROM RKVersion, RKMaster
                     WHERE RKVersion.masterUuid = RKMaster.uuid"""
             )
@@ -736,7 +904,15 @@ class PhotosDB:
                     RKVersion.rawMasterUuid,
                     RKVersion.nonRawMasterUuid,
                     RKMaster.alternateMasterUuid,
-                    RKVersion.isInTrash
+                    RKVersion.isInTrash,
+                    RKVersion.processedHeight, 
+                    RKVersion.processedWidth, 
+                    RKVersion.orientation,
+                    RKMaster.height,
+                    RKMaster.width, 
+                    RKMaster.orientation,
+                    RKMaster.originalFileSize,
+                    RKVersion.subType
                     FROM RKVersion, RKMaster 
                     WHERE RKVersion.masterUuid = RKMaster.uuid"""
             )
@@ -775,6 +951,14 @@ class PhotosDB:
         # 30    RKVersion.nonRawMasterUuid, -- UUID of non-RAW master
         # 31    RKMaster.alternateMasterUuid -- UUID of alternate master (will be RAW master for JPEG and JPEG master for RAW)
         # 32    RKVersion.isInTrash
+        # 33    RKVersion.processedHeight,
+        # 34    RKVersion.processedWidth,
+        # 35    RKVersion.orientation,
+        # 36    RKMaster.height,
+        # 37    RKMaster.width,
+        # 38    RKMaster.orientation,
+        # 39    RKMaster.originalFileSize
+        # 40    RKVersion.subType
 
         for row in c:
             uuid = row[0]
@@ -789,28 +973,38 @@ class PhotosDB:
             # There are sometimes negative values for lastmodifieddate in the database
             # I don't know what these mean but they will raise exception in datetime if
             # not accounted for
+            self._dbphotos[uuid]["lastmodifieddate_timestamp"] = row[4]
             try:
                 self._dbphotos[uuid]["lastmodifieddate"] = datetime.fromtimestamp(
-                    row[4] + td
+                    row[4] + TIME_DELTA
                 )
             except ValueError:
                 self._dbphotos[uuid]["lastmodifieddate"] = None
             except TypeError:
                 self._dbphotos[uuid]["lastmodifieddate"] = None
 
+            self._dbphotos[uuid]["imageTimeZoneOffsetSeconds"] = row[9]
+            self._dbphotos[uuid]["imageDate_timestamp"] = row[5]
+
             try:
-                self._dbphotos[uuid]["imageDate"] = datetime.fromtimestamp(row[5] + td)
+                imagedate = datetime.fromtimestamp(row[5] + TIME_DELTA)
+                seconds = self._dbphotos[uuid]["imageTimeZoneOffsetSeconds"] or 0
+                delta = timedelta(seconds=seconds)
+                tz = timezone(delta)
+                self._dbphotos[uuid]["imageDate"] = imagedate.astimezone(tz=tz)
             except ValueError:
-                self._dbphotos[uuid]["imageDate"] = datetime(1970, 1, 1)
+                # sometimes imageDate is invalid so use 1 Jan 1970 in UTC as image date
+                imagedate = datetime(1970, 1, 1)
+                tz = timezone(timedelta(0))
+                self._dbphotos[uuid]["imageDate"] = imagedate.astimezone(tz=tz)
 
             self._dbphotos[uuid]["mainRating"] = row[6]
             self._dbphotos[uuid]["hasAdjustments"] = row[7]
             self._dbphotos[uuid]["hasKeywords"] = row[8]
-            self._dbphotos[uuid]["imageTimeZoneOffsetSeconds"] = row[9]
             self._dbphotos[uuid]["volumeId"] = row[10]
             self._dbphotos[uuid]["imagePath"] = row[11]
             self._dbphotos[uuid]["extendedDescription"] = row[12]
-            self._dbphotos[uuid]["name"] = row[13]
+            self._dbphotos[uuid]["name"] = normalize_unicode(row[13])
             self._dbphotos[uuid]["isMissing"] = row[14]
             self._dbphotos[uuid]["originalFilename"] = row[15]
             self._dbphotos[uuid]["favorite"] = row[16]
@@ -834,6 +1028,13 @@ class PhotosDB:
                 self._dbphotos[uuid]["type"] = None
 
             self._dbphotos[uuid]["UTI"] = row[22]
+
+            # The UTI in RKMaster will always be UTI of the original
+            # Unlike Photos 5 which changes the UTI to match latest edit
+            self._dbphotos[uuid]["UTI_original"] = row[22]
+
+            # UTI edited will be read from RKModelResource
+            self._dbphotos[uuid]["UTI_edited"] = None
 
             # handle burst photos
             # if burst photo, determine whether or not it's a selected burst photo
@@ -901,11 +1102,6 @@ class PhotosDB:
             self._dbphotos[uuid]["cloudAvailable"] = None
             self._dbphotos[uuid]["incloud"] = None
 
-            # TODO: NOT YET USED -- PLACEHOLDER for RAW processing (currently only in _process_database5)
-            # original resource choice (e.g. RAW or jpeg)
-            self._dbphotos[uuid]["original_resource_choice"] = None
-            self._dbphotos[uuid]["raw_is_original"] = None
-
             # associated RAW image info
             self._dbphotos[uuid]["has_raw"] = True if row[25] == 7 else False
             self._dbphotos[uuid]["UTI_raw"] = None
@@ -917,10 +1113,44 @@ class PhotosDB:
             self._dbphotos[uuid]["non_raw_master_uuid"] = row[30]
             self._dbphotos[uuid]["alt_master_uuid"] = row[31]
 
+            # original resource choice (e.g. RAW or jpeg)
+            # In Photos 5+, original_resource_choice set from:
+            # ZADDITIONALASSETATTRIBUTES.ZORIGINALRESOURCECHOICE
+            # = 0 if jpeg is selected as "original" in Photos (the default)
+            # = 1 if RAW is selected as "original" in Photos
+            # RKVersion.subType, RAW always appears to be 16
+            #   4 = mov
+            #   16 = RAW
+            #   32 = JPEG
+            #   64 = TIFF
+            #   2048 = PNG
+            #   32768 = HIEC
+            self._dbphotos[uuid]["original_resource_choice"] = (
+                1 if row[40] == 16 and self._dbphotos[uuid]["has_raw"] else 0
+            )
+            self._dbphotos[uuid]["raw_is_original"] = bool(
+                self._dbphotos[uuid]["original_resource_choice"]
+            )
+
             # recently deleted items
             self._dbphotos[uuid]["intrash"] = True if row[32] == 1 else False
 
+            # height/width/orientation
+            self._dbphotos[uuid]["height"] = row[33]
+            self._dbphotos[uuid]["width"] = row[34]
+            self._dbphotos[uuid]["orientation"] = row[35]
+            self._dbphotos[uuid]["original_height"] = row[36]
+            self._dbphotos[uuid]["original_width"] = row[37]
+            self._dbphotos[uuid]["original_orientation"] = row[38]
+            self._dbphotos[uuid]["original_filesize"] = row[39]
+
+            # import session not yet handled for Photos 4
+            self._dbphotos[uuid]["import_session"] = None
+            self._dbphotos[uuid]["import_uuid"] = None
+            self._dbphotos[uuid]["fok_import_session"] = None
+
         # get additional details from RKMaster, needed for RAW processing
+        verbose("Processing additional photo details.")
         c.execute(
             """ SELECT 
                 RKMaster.uuid,
@@ -932,7 +1162,8 @@ class PhotosDB:
                 RKMaster.modelID, 
                 RKMaster.fileSize, 
                 RKMaster.isTrulyRaw,
-                RKMaster.alternateMasterUuid
+                RKMaster.alternateMasterUuid,
+                RKMaster.filename
                 FROM RKMaster
             """
         )
@@ -948,6 +1179,7 @@ class PhotosDB:
         # 7     RKMaster.fileSize,
         # 8     RKMaster.isTrulyRaw,
         # 9     RKMaster.alternateMasterUuid
+        # 10    RKMaster.filename
 
         for row in c:
             uuid = row[0]
@@ -962,6 +1194,7 @@ class PhotosDB:
             info["fileSize"] = row[7]
             info["isTrulyRAW"] = row[8]
             info["alternateMasterUuid"] = row[9]
+            info["filename"] = row[10]
             self._dbphotos_master[uuid] = info
 
         # get details needed to find path of the edited photos
@@ -991,7 +1224,6 @@ class PhotosDB:
                     if (
                         row[1] != "UNADJUSTEDNONRAW"
                         and row[1] != "UNADJUSTED"
-                        # and row[4] == "public.jpeg"
                         and row[6] == 2
                     ):
                         if "edit_resource_id" in self._dbphotos[uuid]:
@@ -1005,6 +1237,7 @@ class PhotosDB:
                         # should we return all edits or just most recent one?
                         # For now, return most recent edit
                         self._dbphotos[uuid]["edit_resource_id"] = row[2]
+                        self._dbphotos[uuid]["UTI_edited"] = row[4]
 
         # get details on external edits
         c.execute(
@@ -1077,7 +1310,7 @@ class PhotosDB:
         )
 
         # Order of results
-        # 0  RKMaster.uuid,
+        # 0  RKVersion.uuid,
         # 1  RKMaster.cloudLibraryState,
         # 2  RKCloudResource.available,
         # 3  RKCloudResource.status
@@ -1091,6 +1324,7 @@ class PhotosDB:
                 self._dbphotos[uuid]["incloud"] = True if row[2] == 1 else False
 
         # get location data
+        verbose("Processing location data.")
         # get the country codes
         country_codes = c.execute(
             "SELECT modelID, countryCode "
@@ -1128,11 +1362,12 @@ class PhotosDB:
 
             # get the place info that matches the RKPlace modelIDs for this photo
             # (place_ids), sort by area (element 3 of the place_data tuple in places)
+            # area could be None so assume 0 if it is (issue #230)
             place_names = [
                 pname
                 for pname in sorted(
                     [places[p] for p in places if p in place_ids],
-                    key=lambda place: place[3],
+                    key=lambda place: place[3] if place[3] is not None else 0,
                 )
             ]
 
@@ -1149,20 +1384,35 @@ class PhotosDB:
 
         # add volume name to _dbphotos_master
         for info in self._dbphotos_master.values():
-            info["volume"] = (
-                self._dbvolumes[info["volumeId"]]
-                if info["volumeId"] is not None
-                else None
-            )
+            # issue 230: have seen bad volumeID values
+            try:
+                info["volume"] = (
+                    self._dbvolumes[info["volumeId"]]
+                    if info["volumeId"] is not None
+                    else None
+                )
+            except KeyError:
+                info["volume"] = None
 
         # add data on RAW images
         for info in self._dbphotos.values():
             if info["has_raw"]:
                 raw_uuid = info["raw_master_uuid"]
                 info["raw_info"] = self._dbphotos_master[raw_uuid]
+                info["UTI_raw"] = self._dbphotos_master[raw_uuid]["UTI"]
+                non_raw_uuid = info["non_raw_master_uuid"]
+                info["raw_pair_info"] = self._dbphotos_master[non_raw_uuid]
+            else:
+                info["raw_info"] = None
+                info["UTI_raw"] = None
+                info["raw_pair_info"] = None
 
         # done with the database connection
         conn.close()
+
+        # process faces
+        verbose("Processing face details.")
+        self._process_faceinfo()
 
         # add faces and keywords to photo data
         for uuid in self._dbphotos:
@@ -1187,19 +1437,24 @@ class PhotosDB:
                 self._dbphotos[uuid]["hasAlbums"] = 0
 
             if self._dbphotos[uuid]["volumeId"] is not None:
-                self._dbphotos[uuid]["volume"] = self._dbvolumes[
-                    self._dbphotos[uuid]["volumeId"]
-                ]
+                # issue 230: have seen bad volumeID values
+                try:
+                    self._dbphotos[uuid]["volume"] = self._dbvolumes[
+                        self._dbphotos[uuid]["volumeId"]
+                    ]
+                except KeyError:
+                    self._dbphotos[uuid]["volume"] = None
             else:
                 self._dbphotos[uuid]["volume"] = None
 
         # done processing, dump debug data if requested
+        verbose("Done processing details from Photos library.")
         if _debug():
             logging.debug("Faces (_dbfaces_uuid):")
             logging.debug(pformat(self._dbfaces_uuid))
 
-            logging.debug("Faces by person (_dbfaces_person):")
-            logging.debug(pformat(self._dbfaces_person))
+            logging.debug("Persons (_dbpersons_pk):")
+            logging.debug(pformat(self._dbpersons_pk))
 
             logging.debug("Keywords by uuid (_dbkeywords_uuid):")
             logging.debug(pformat(self._dbkeywords_uuid))
@@ -1260,60 +1515,167 @@ class PhotosDB:
         return folders
 
     def _process_database5(self):
-        """ process the Photos database to extract info """
-        """ works on Photos version >= 5.0 """
+        """ process the Photos database to extract info 
+            works on Photos version 5 and version 6
+
+            This is a big hairy 700 line function that should probably be refactored
+            but it works so don't touch it.
+        """
 
         if _debug():
             logging.debug(f"_process_database5")
-
-        # Epoch is Jan 1, 2001
-        td = (datetime(2001, 1, 1, 0, 0) - datetime(1970, 1, 1, 0, 0)).total_seconds()
-
+        verbose = self._verbose
+        verbose(f"Processing database.")
         (conn, c) = _open_sql_file(self._tmp_db)
+
+        # some of the tables/columns have different names in different versions of Photos
+        photos_ver = get_db_model_version(self._tmp_db)
+        self._photos_ver = photos_ver
+        verbose(f"Database version: {self._db_version}, {photos_ver}.")
+        asset_table = _DB_TABLE_NAMES[photos_ver]["ASSET"]
+        keyword_join = _DB_TABLE_NAMES[photos_ver]["KEYWORD_JOIN"]
+        album_join = _DB_TABLE_NAMES[photos_ver]["ALBUM_JOIN"]
+        album_sort = _DB_TABLE_NAMES[photos_ver]["ALBUM_SORT_ORDER"]
+        import_fok = _DB_TABLE_NAMES[photos_ver]["IMPORT_FOK"]
+        depth_state = _DB_TABLE_NAMES[photos_ver]["DEPTH_STATE"]
 
         # Look for all combinations of persons and pictures
         if _debug():
             logging.debug(f"Getting information about persons")
 
+        # get info to associate persons with photos
+        # then get detected faces in each photo and link to persons
+        verbose("Processing persons in photos.")
         c.execute(
-            "SELECT ZPERSON.ZFULLNAME, ZGENERICASSET.ZUUID "
-            "FROM ZPERSON, ZDETECTEDFACE, ZGENERICASSET "
-            "WHERE ZDETECTEDFACE.ZPERSON = ZPERSON.Z_PK AND ZDETECTEDFACE.ZASSET = ZGENERICASSET.Z_PK "
+            """ SELECT
+                ZPERSON.Z_PK,
+                ZPERSON.ZPERSONUUID,
+                ZPERSON.ZFULLNAME,
+                ZPERSON.ZFACECOUNT,
+                ZPERSON.ZKEYFACE,
+                ZPERSON.ZDISPLAYNAME
+                FROM ZPERSON
+            """
         )
+
+        # 0     ZPERSON.Z_PK,
+        # 1     ZPERSON.ZPERSONUUID,
+        # 2     ZPERSON.ZFULLNAME,
+        # 3     ZPERSON.ZFACECOUNT,
+        # 4     ZPERSON.ZKEYFACE,
+        # 5     ZPERSON.ZDISPLAYNAME
+
         for person in c:
-            if person[0] is None:
-                continue
-            person_name = person[0] if person[0] != "" else _UNKNOWN_PERSON
-            if not person[1] in self._dbfaces_uuid:
-                self._dbfaces_uuid[person[1]] = []
-            if not person_name in self._dbfaces_person:
-                self._dbfaces_person[person_name] = []
-            self._dbfaces_uuid[person[1]].append(person_name)
-            self._dbfaces_person[person_name].append(person[1])
+            pk = person[0]
+            fullname = person[2] if person[2] != "" else _UNKNOWN_PERSON
+            self._dbpersons_pk[pk] = {
+                "pk": pk,
+                "uuid": person[1],
+                "fullname": fullname,
+                "facecount": person[3],
+                "keyface": person[4],
+                "displayname": person[5],
+                "photo_uuid": None,
+                "keyface_uuid": None,
+            }
+            try:
+                self._dbpersons_fullname[fullname].append(pk)
+            except KeyError:
+                self._dbpersons_fullname[fullname] = [pk]
+
+        # get info on keyface -- some photos have null keyface so can't do a single query
+        # (at least not with my SQL skills)
+        c.execute(
+            f""" SELECT
+                ZPERSON.Z_PK,
+                ZPERSON.ZKEYFACE,
+                {asset_table}.ZUUID,
+                ZDETECTEDFACE.ZUUID
+                FROM ZPERSON, ZDETECTEDFACE, {asset_table}
+                WHERE ZDETECTEDFACE.Z_PK = ZPERSON.ZKEYFACE AND
+                ZDETECTEDFACE.ZASSET = {asset_table}.Z_PK
+            """
+        )
+
+        # 0 ZPERSON.Z_PK,
+        # 1 ZPERSON.ZKEYFACE,
+        # 2 ZGENERICASSET.ZUUID,
+        # 3 ZDETECTEDFACE.ZUUID
+
+        for person in c:
+            pk = person[0]
+            try:
+                self._dbpersons_pk[pk]["photo_uuid"] = person[2]
+                self._dbpersons_pk[pk]["keyface_uuid"] = person[3]
+            except KeyError:
+                logging.debug(f"Unexpected KeyError _dbpersons_pk[{pk}]")
+
+        # get information on detected faces
+        verbose("Processing detected faces in photos.")
+        c.execute(
+            f""" SELECT
+                ZPERSON.Z_PK,
+                {asset_table}.ZUUID
+                FROM ZPERSON, ZDETECTEDFACE, {asset_table}
+                WHERE ZDETECTEDFACE.ZPERSON = ZPERSON.Z_PK AND
+                ZDETECTEDFACE.ZASSET = {asset_table}.Z_PK
+            """
+        )
+
+        # 0     ZPERSON.Z_PK,
+        # 1     ZGENERICASSET.ZUUID,
+
+        for face in c:
+            pk = face[0]
+            uuid = face[1]
+            try:
+                self._dbfaces_uuid[uuid].append(pk)
+            except KeyError:
+                self._dbfaces_uuid[uuid] = [pk]
+
+            try:
+                self._dbfaces_pk[pk].append(uuid)
+            except KeyError:
+                self._dbfaces_pk[pk] = [uuid]
 
         if _debug():
             logging.debug(f"Finished walking through persons")
-            logging.debug(pformat(self._dbfaces_person))
-            logging.debug(self._dbfaces_uuid)
+            logging.debug(pformat(self._dbpersons_pk))
+            logging.debug(pformat(self._dbpersons_fullname))
+            logging.debug(pformat(self._dbfaces_pk))
+            logging.debug(pformat(self._dbfaces_uuid))
 
         # get details about albums
+        verbose("Processing albums.")
         c.execute(
-            "SELECT ZGENERICALBUM.ZUUID, ZGENERICASSET.ZUUID "
-            "FROM ZGENERICASSET "
-            "JOIN Z_26ASSETS ON Z_26ASSETS.Z_34ASSETS = ZGENERICASSET.Z_PK "
-            "JOIN ZGENERICALBUM ON ZGENERICALBUM.Z_PK = Z_26ASSETS.Z_26ALBUMS "
+            f""" SELECT 
+                ZGENERICALBUM.ZUUID, 
+                {asset_table}.ZUUID,
+                {album_sort}
+                FROM {asset_table} 
+                JOIN Z_26ASSETS ON {album_join} = {asset_table}.Z_PK 
+                JOIN ZGENERICALBUM ON ZGENERICALBUM.Z_PK = Z_26ASSETS.Z_26ALBUMS
+            """
         )
+
+        # 0     ZGENERICALBUM.ZUUID,
+        # 1     ZGENERICASSET.ZUUID,
+        # 2     Z_26ASSETS.Z_FOK_34ASSETS
+
         for album in c:
             # store by uuid in _dbalbums_uuid and by album in _dbalbums_album
+            album_uuid = album[0]
+            photo_uuid = album[1]
+            sort_order = album[2]
             try:
-                self._dbalbums_uuid[album[1]].append(album[0])
+                self._dbalbums_uuid[photo_uuid].append(album_uuid)
             except KeyError:
-                self._dbalbums_uuid[album[1]] = [album[0]]
+                self._dbalbums_uuid[photo_uuid] = [album_uuid]
 
             try:
-                self._dbalbums_album[album[0]].append(album[1])
+                self._dbalbums_album[album_uuid].append((photo_uuid, sort_order))
             except KeyError:
-                self._dbalbums_album[album[0]] = [album[1]]
+                self._dbalbums_album[album_uuid] = [(photo_uuid, sort_order)]
 
         # now get additional details about albums
         c.execute(
@@ -1327,13 +1689,16 @@ class PhotosDB:
             "ZKIND, "  # 6
             "ZPARENTFOLDER, "  # 7
             "Z_PK, "  # 8
-            "ZTRASHEDSTATE "  # 9
+            "ZTRASHEDSTATE, "  # 9
+            "ZCREATIONDATE, "  # 10
+            "ZSTARTDATE, "  # 11
+            "ZENDDATE "  # 12
             "FROM ZGENERICALBUM "
         )
         for album in c:
             self._dbalbum_details[album[0]] = {
                 "_uuid": album[0],
-                "title": album[1],
+                "title": normalize_unicode(album[1]),
                 "cloudlocalstate": album[2],
                 "cloudownerfirstname": album[3],
                 "cloudownderlastname": album[4],
@@ -1344,6 +1709,9 @@ class PhotosDB:
                 "parentfolder": album[7],
                 "pk": album[8],
                 "intrash": False if album[9] == 0 else True,
+                "creation_date": album[10],
+                "start_date": album[11],
+                "end_date": album[12],
             }
 
             # add cross-reference by pk to uuid
@@ -1397,20 +1765,22 @@ class PhotosDB:
             logging.debug(pformat(self._dbalbum_folders))
 
         # get details on keywords
+        verbose("Processing keywords.")
         c.execute(
-            "SELECT ZKEYWORD.ZTITLE, ZGENERICASSET.ZUUID "
-            "FROM ZGENERICASSET "
-            "JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = ZGENERICASSET.Z_PK "
-            "JOIN Z_1KEYWORDS ON Z_1KEYWORDS.Z_1ASSETATTRIBUTES = ZADDITIONALASSETATTRIBUTES.Z_PK "
-            "JOIN ZKEYWORD ON ZKEYWORD.Z_PK = Z_1KEYWORDS.Z_37KEYWORDS "
+            f"""SELECT ZKEYWORD.ZTITLE, {asset_table}.ZUUID
+                FROM {asset_table} 
+                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = {asset_table}.Z_PK 
+                JOIN Z_1KEYWORDS ON Z_1KEYWORDS.Z_1ASSETATTRIBUTES = ZADDITIONALASSETATTRIBUTES.Z_PK 
+                JOIN ZKEYWORD ON ZKEYWORD.Z_PK = {keyword_join} """
         )
         for keyword in c:
+            keyword_title = normalize_unicode(keyword[0])
             if not keyword[1] in self._dbkeywords_uuid:
                 self._dbkeywords_uuid[keyword[1]] = []
-            if not keyword[0] in self._dbkeywords_keyword:
-                self._dbkeywords_keyword[keyword[0]] = []
+            if not keyword_title in self._dbkeywords_keyword:
+                self._dbkeywords_keyword[keyword_title] = []
             self._dbkeywords_uuid[keyword[1]].append(keyword[0])
-            self._dbkeywords_keyword[keyword[0]].append(keyword[1])
+            self._dbkeywords_keyword[keyword_title].append(keyword[1])
 
         if _debug():
             logging.debug(f"Finished walking through keywords")
@@ -1427,40 +1797,50 @@ class PhotosDB:
             logging.debug(self._dbvolumes)
 
         # get details about photos
+        verbose("Processing photo details.")
         logging.debug(f"Getting information about photos")
         c.execute(
-            """SELECT ZGENERICASSET.ZUUID, 
+            f"""SELECT {asset_table}.ZUUID, 
                 ZADDITIONALASSETATTRIBUTES.ZMASTERFINGERPRINT, 
                 ZADDITIONALASSETATTRIBUTES.ZTITLE, 
                 ZADDITIONALASSETATTRIBUTES.ZORIGINALFILENAME, 
-                ZGENERICASSET.ZMODIFICATIONDATE, 
-                ZGENERICASSET.ZDATECREATED, 
+                {asset_table}.ZMODIFICATIONDATE, 
+                {asset_table}.ZDATECREATED, 
                 ZADDITIONALASSETATTRIBUTES.ZTIMEZONEOFFSET, 
                 ZADDITIONALASSETATTRIBUTES.ZINFERREDTIMEZONEOFFSET, 
                 ZADDITIONALASSETATTRIBUTES.ZTIMEZONENAME, 
-                ZGENERICASSET.ZHIDDEN, 
-                ZGENERICASSET.ZFAVORITE, 
-                ZGENERICASSET.ZDIRECTORY, 
-                ZGENERICASSET.ZFILENAME, 
-                ZGENERICASSET.ZLATITUDE, 
-                ZGENERICASSET.ZLONGITUDE, 
-                ZGENERICASSET.ZHASADJUSTMENTS, 
-                ZGENERICASSET.ZCLOUDBATCHPUBLISHDATE, 
-                ZGENERICASSET.ZKIND, 
-                ZGENERICASSET.ZUNIFORMTYPEIDENTIFIER,
-				ZGENERICASSET.ZAVALANCHEUUID,
-				ZGENERICASSET.ZAVALANCHEPICKTYPE,
-                ZGENERICASSET.ZKINDSUBTYPE,
-                ZGENERICASSET.ZCUSTOMRENDEREDVALUE,
+                {asset_table}.ZHIDDEN, 
+                {asset_table}.ZFAVORITE, 
+                {asset_table}.ZDIRECTORY, 
+                {asset_table}.ZFILENAME, 
+                {asset_table}.ZLATITUDE, 
+                {asset_table}.ZLONGITUDE, 
+                {asset_table}.ZHASADJUSTMENTS, 
+                {asset_table}.ZCLOUDBATCHPUBLISHDATE, 
+                {asset_table}.ZKIND, 
+                {asset_table}.ZUNIFORMTYPEIDENTIFIER,
+                {asset_table}.ZAVALANCHEUUID,
+                {asset_table}.ZAVALANCHEPICKTYPE,
+                {asset_table}.ZKINDSUBTYPE,
+                {asset_table}.ZCUSTOMRENDEREDVALUE,
                 ZADDITIONALASSETATTRIBUTES.ZCAMERACAPTUREDEVICE,
-                ZGENERICASSET.ZCLOUDASSETGUID,
+                {asset_table}.ZCLOUDASSETGUID,
                 ZADDITIONALASSETATTRIBUTES.ZREVERSELOCATIONDATA,
-                ZGENERICASSET.ZMOMENT,
-	            ZADDITIONALASSETATTRIBUTES.ZORIGINALRESOURCECHOICE,
-                ZGENERICASSET.ZTRASHEDSTATE
-                FROM ZGENERICASSET 
-                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = ZGENERICASSET.Z_PK 
-                ORDER BY ZGENERICASSET.ZUUID  """
+                {asset_table}.ZMOMENT,
+                ZADDITIONALASSETATTRIBUTES.ZORIGINALRESOURCECHOICE,
+                {asset_table}.ZTRASHEDSTATE,
+                {asset_table}.ZHEIGHT, 
+                {asset_table}.ZWIDTH, 
+                {asset_table}.ZORIENTATION, 
+                ZADDITIONALASSETATTRIBUTES.ZORIGINALHEIGHT, 
+                ZADDITIONALASSETATTRIBUTES.ZORIGINALWIDTH, 
+                ZADDITIONALASSETATTRIBUTES.ZORIGINALORIENTATION,
+                ZADDITIONALASSETATTRIBUTES.ZORIGINALFILESIZE,
+                {depth_state},
+                {asset_table}.ZADJUSTMENTTIMESTAMP
+                FROM {asset_table} 
+                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = {asset_table}.Z_PK 
+                ORDER BY {asset_table}.ZUUID  """
         )
         # Order of results
         # 0    SELECT ZGENERICASSET.ZUUID,
@@ -1493,6 +1873,15 @@ class PhotosDB:
         # 26   ZGENERICASSET.ZMOMENT -- FK for ZMOMENT.Z_PK
         # 27   ZADDITIONALASSETATTRIBUTES.ZORIGINALRESOURCECHOICE -- 1 if associated RAW image is original else 0
         # 28   ZGENERICASSET.ZTRASHEDSTATE -- 0 if not in trash, 1 if in trash
+        # 29   ZGENERICASSET.ZHEIGHT,
+        # 30   ZGENERICASSET.ZWIDTH,
+        # 31   ZGENERICASSET.ZORIENTATION,
+        # 32   ZADDITIONALASSETATTRIBUTES.ZORIGINALHEIGHT,
+        # 33   ZADDITIONALASSETATTRIBUTES.ZORIGINALWIDTH,
+        # 34   ZADDITIONALASSETATTRIBUTES.ZORIGINALORIENTATION,
+        # 35   ZADDITIONALASSETATTRIBUTES.ZORIGINALFILESIZE
+        # 36   ZGENERICASSET.ZDEPTHSTATES / ZASSET.ZDEPTHTYPE
+        # 37   ZGENERICASSET.ZADJUSTMENTTIMESTAMP -- when was photo edited?
 
         for row in c:
             uuid = row[0]
@@ -1501,24 +1890,34 @@ class PhotosDB:
             info["modelID"] = None
             info["masterUuid"] = None
             info["masterFingerprint"] = row[1]
-            info["name"] = row[2]
+            info["name"] = normalize_unicode(row[2])
 
             # There are sometimes negative values for lastmodifieddate in the database
             # I don't know what these mean but they will raise exception in datetime if
             # not accounted for
+            info["lastmodifieddate_timestamp"] = row[37]
             try:
-                info["lastmodifieddate"] = datetime.fromtimestamp(row[4] + td)
+                info["lastmodifieddate"] = datetime.fromtimestamp(row[37] + TIME_DELTA)
             except ValueError:
                 info["lastmodifieddate"] = None
             except TypeError:
                 info["lastmodifieddate"] = None
 
-            try:
-                info["imageDate"] = datetime.fromtimestamp(row[5] + td)
-            except ValueError:
-                info["imageDate"] = datetime(1970, 1, 1)
-
             info["imageTimeZoneOffsetSeconds"] = row[6]
+            info["imageDate_timestamp"] = row[5]
+
+            try:
+                imagedate = datetime.fromtimestamp(row[5] + TIME_DELTA)
+                seconds = info["imageTimeZoneOffsetSeconds"] or 0
+                delta = timedelta(seconds=seconds)
+                tz = timezone(delta)
+                info["imageDate"] = imagedate.astimezone(tz=tz)
+            except ValueError:
+                # sometimes imageDate is invalid so use 1 Jan 1970 in UTC as image date
+                imagedate = datetime(1970, 1, 1)
+                tz = timezone(timedelta(0))
+                info["imageDate"] = imagedate.astimezone(tz=tz)
+
             info["hidden"] = row[9]
             info["favorite"] = row[10]
             info["originalFilename"] = row[3]
@@ -1559,6 +1958,7 @@ class PhotosDB:
                 info["type"] = None
 
             info["UTI"] = row[18]
+            info["UTI_original"] = None  # filled in later
 
             # handle burst photos
             # if burst photo, determine whether or not it's a selected burst photo
@@ -1604,10 +2004,10 @@ class PhotosDB:
             # 3 = HDR photo
             # 4 = non-HDR version of the photo
             # 6 = panorama
-            # 8 = portrait
+            # > 6 = portrait (sometimes, see ZDEPTHSTATE/ZDEPTHTYPE)
             info["customRenderedValue"] = row[22]
             info["hdr"] = True if row[22] == 3 else False
-            info["portrait"] = True if row[22] == 8 else False
+            info["portrait"] = True if row[36] != 0 else False
 
             # Set panorama from either KindSubType or RenderedValue
             info["panorama"] = True if row[21] == 1 or row[22] == 6 else False
@@ -1644,6 +2044,21 @@ class PhotosDB:
             # recently deleted items
             info["intrash"] = True if row[28] == 1 else False
 
+            # height/width/orientation
+            info["height"] = row[29]
+            info["width"] = row[30]
+            info["orientation"] = row[31]
+            info["original_height"] = row[32]
+            info["original_width"] = row[33]
+            info["original_orientation"] = row[34]
+            info["original_filesize"] = row[35]
+
+            # initialize import session info which will be filled in later
+            # not every photo has an import session so initialize all records now
+            info["import_session"] = None
+            info["fok_import_session"] = None
+            info["import_uuid"] = None
+
             # associated RAW image info
             # will be filled in later
             info["has_raw"] = False
@@ -1670,19 +2085,47 @@ class PhotosDB:
             # else:
             #     info["burst"] = False
 
-        # Get extended description
+        # get info on import sessions
+        # 0    ZGENERICASSET.ZUUID
+        # 1    ZGENERICASSET.ZIMPORTSESSION
+        # 2    ZGENERICASSET.Z_FOK_IMPORTSESSION
+        # 3    ZGENERICALBUM.ZUUID,
+        verbose("Processing import sessions.")
         c.execute(
-            "SELECT ZGENERICASSET.ZUUID, "
-            "ZASSETDESCRIPTION.ZLONGDESCRIPTION "
-            "FROM ZGENERICASSET "
-            "JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = ZGENERICASSET.Z_PK "
-            "JOIN ZASSETDESCRIPTION ON ZASSETDESCRIPTION.Z_PK = ZADDITIONALASSETATTRIBUTES.ZASSETDESCRIPTION "
-            "ORDER BY ZGENERICASSET.ZUUID "
+            f"""SELECT
+                {asset_table}.ZUUID,
+                {asset_table}.ZIMPORTSESSION,
+                {import_fok},
+                ZGENERICALBUM.ZUUID
+                FROM
+                {asset_table}
+                JOIN ZGENERICALBUM ON ZGENERICALBUM.Z_PK = {asset_table}.ZIMPORTSESSION
+            """
+        )
+
+        for row in c:
+            uuid = row[0]
+            try:
+                self._dbphotos[uuid]["import_session"] = row[1]
+                self._dbphotos[uuid]["fok_import_session"] = row[2]
+                self._dbphotos[uuid]["import_uuid"] = row[3]
+            except KeyError:
+                logging.debug(f"No info record for uuid {uuid} for import session")
+
+        # Get extended description
+        verbose("Processing additional photo details.")
+        c.execute(
+            f"""SELECT {asset_table}.ZUUID, 
+                ZASSETDESCRIPTION.ZLONGDESCRIPTION 
+                FROM {asset_table} 
+                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = {asset_table}.Z_PK 
+                JOIN ZASSETDESCRIPTION ON ZASSETDESCRIPTION.Z_PK = ZADDITIONALASSETATTRIBUTES.ZASSETDESCRIPTION 
+                ORDER BY {asset_table}.ZUUID """
         )
         for row in c:
             uuid = row[0]
             if uuid in self._dbphotos:
-                self._dbphotos[uuid]["extendedDescription"] = row[1]
+                self._dbphotos[uuid]["extendedDescription"] = normalize_unicode(row[1])
             else:
                 if _debug():
                     logging.debug(
@@ -1691,13 +2134,12 @@ class PhotosDB:
 
         # get information about adjusted/edited photos
         c.execute(
-            "SELECT ZGENERICASSET.ZUUID, "
-            "ZGENERICASSET.ZHASADJUSTMENTS, "
-            "ZUNMANAGEDADJUSTMENT.ZADJUSTMENTFORMATIDENTIFIER "
-            "FROM ZGENERICASSET, ZUNMANAGEDADJUSTMENT "
-            "JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = ZGENERICASSET.Z_PK "
-            "WHERE ZADDITIONALASSETATTRIBUTES.ZUNMANAGEDADJUSTMENT = ZUNMANAGEDADJUSTMENT.Z_PK "
-            "AND ZGENERICASSET.ZTRASHEDSTATE = 0 "
+            f"""SELECT {asset_table}.ZUUID, 
+                {asset_table}.ZHASADJUSTMENTS, 
+                ZUNMANAGEDADJUSTMENT.ZADJUSTMENTFORMATIDENTIFIER 
+                FROM {asset_table}, ZUNMANAGEDADJUSTMENT 
+                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = {asset_table}.Z_PK 
+                WHERE ZADDITIONALASSETATTRIBUTES.ZUNMANAGEDADJUSTMENT = ZUNMANAGEDADJUSTMENT.Z_PK """
         )
         for row in c:
             uuid = row[0]
@@ -1715,43 +2157,50 @@ class PhotosDB:
         # determine if a photo is missing in Photos 5
 
         # Get info on remote/local availability for photos in shared albums
+        # Also get UTI of original image (zdatastoresubtype = 1)
         c.execute(
-            """ SELECT 
-                ZGENERICASSET.ZUUID, 
+            f""" SELECT 
+                {asset_table}.ZUUID, 
                 ZINTERNALRESOURCE.ZLOCALAVAILABILITY, 
-                ZINTERNALRESOURCE.ZREMOTEAVAILABILITY
-                FROM ZGENERICASSET
-                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = ZGENERICASSET.Z_PK 
+                ZINTERNALRESOURCE.ZREMOTEAVAILABILITY,
+                ZINTERNALRESOURCE.ZDATASTORESUBTYPE,
+                ZINTERNALRESOURCE.ZUNIFORMTYPEIDENTIFIER,
+                ZUNIFORMTYPEIDENTIFIER.ZIDENTIFIER
+                FROM {asset_table}
+                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = {asset_table}.Z_PK 
                 JOIN ZINTERNALRESOURCE ON ZINTERNALRESOURCE.ZASSET = ZADDITIONALASSETATTRIBUTES.ZASSET 
+                JOIN ZUNIFORMTYPEIDENTIFIER ON ZUNIFORMTYPEIDENTIFIER.Z_PK = ZINTERNALRESOURCE.ZUNIFORMTYPEIDENTIFIER 
                 WHERE  ZDATASTORESUBTYPE = 1 OR ZDATASTORESUBTYPE = 3 """
         )
+
+        # Order of results:
+        # 0 {asset_table}.ZUUID,
+        # 1 ZINTERNALRESOURCE.ZLOCALAVAILABILITY,
+        # 2 ZINTERNALRESOURCE.ZREMOTEAVAILABILITY,
+        # 3 ZINTERNALRESOURCE.ZDATASTORESUBTYPE,
+        # 4 ZINTERNALRESOURCE.ZUNIFORMTYPEIDENTIFIER,
+        # 5 ZUNIFORMTYPEIDENTIFIER.ZIDENTIFIER
 
         for row in c:
             uuid = row[0]
             if uuid in self._dbphotos:
-                #  and self._dbphotos[uuid]["isMissing"] is None:
                 self._dbphotos[uuid]["localAvailability"] = row[1]
                 self._dbphotos[uuid]["remoteAvailability"] = row[2]
-
-                # old = self._dbphotos[uuid]["isMissing"]
+                if row[3] == 1:
+                    self._dbphotos[uuid]["UTI_original"] = row[5]
 
                 if row[1] != 1:
                     self._dbphotos[uuid]["isMissing"] = 1
                 else:
                     self._dbphotos[uuid]["isMissing"] = 0
 
-                # if old is not None and old != self._dbphotos[uuid]["isMissing"]:
-                #     logging.warning(
-                #         f"{uuid} isMissing changed: {old} {self._dbphotos[uuid]['isMissing']}"
-                #     )
-
         # get information on local/remote availability
         c.execute(
-            """ SELECT ZGENERICASSET.ZUUID,
+            f""" SELECT {asset_table}.ZUUID,
                 ZINTERNALRESOURCE.ZLOCALAVAILABILITY,
                 ZINTERNALRESOURCE.ZREMOTEAVAILABILITY
-                FROM ZGENERICASSET
-                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = ZGENERICASSET.Z_PK
+                FROM {asset_table}
+                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = {asset_table}.Z_PK
                 JOIN ZINTERNALRESOURCE ON ZINTERNALRESOURCE.ZFINGERPRINT = ZADDITIONALASSETATTRIBUTES.ZMASTERFINGERPRINT """
         )
 
@@ -1761,25 +2210,18 @@ class PhotosDB:
                 self._dbphotos[uuid]["localAvailability"] = row[1]
                 self._dbphotos[uuid]["remoteAvailability"] = row[2]
 
-                # old = self._dbphotos[uuid]["isMissing"]
-
                 if row[1] != 1:
                     self._dbphotos[uuid]["isMissing"] = 1
                 else:
                     self._dbphotos[uuid]["isMissing"] = 0
 
-                # if old is not None and old != self._dbphotos[uuid]["isMissing"]:
-                #     logging.warning(
-                #         f"{uuid} isMissing changed: {old} {self._dbphotos[uuid]['isMissing']}"
-                #     )
-
         # get information about cloud sync state
         c.execute(
-            """ SELECT
-                ZGENERICASSET.ZUUID,
+            f""" SELECT
+                {asset_table}.ZUUID,
                 ZCLOUDMASTER.ZCLOUDLOCALSTATE
-                FROM ZCLOUDMASTER, ZGENERICASSET
-                WHERE ZGENERICASSET.ZMASTER = ZCLOUDMASTER.Z_PK """
+                FROM ZCLOUDMASTER, {asset_table}
+                WHERE {asset_table}.ZMASTER = ZCLOUDMASTER.Z_PK """
         )
         for row in c:
             uuid = row[0]
@@ -1790,15 +2232,15 @@ class PhotosDB:
         # get information about associted RAW images
         # RAW images have ZDATASTORESUBTYPE = 17
         c.execute(
-            """ SELECT
-                ZGENERICASSET.ZUUID,
+            f""" SELECT
+                {asset_table}.ZUUID,
                 ZINTERNALRESOURCE.ZDATALENGTH, 
                 ZUNIFORMTYPEIDENTIFIER.ZIDENTIFIER,
                 ZINTERNALRESOURCE.ZDATASTORESUBTYPE,
                 ZINTERNALRESOURCE.ZRESOURCETYPE
-                FROM ZGENERICASSET
+                FROM {asset_table}
                 JOIN ZINTERNALRESOURCE ON ZINTERNALRESOURCE.ZASSET = ZADDITIONALASSETATTRIBUTES.ZASSET
-                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = ZGENERICASSET.Z_PK 
+                JOIN ZADDITIONALASSETATTRIBUTES ON ZADDITIONALASSETATTRIBUTES.ZASSET = {asset_table}.Z_PK 
                 JOIN ZUNIFORMTYPEIDENTIFIER ON ZUNIFORMTYPEIDENTIFIER.Z_PK =  ZINTERNALRESOURCE.ZUNIFORMTYPEIDENTIFIER
                 WHERE ZINTERNALRESOURCE.ZDATASTORESUBTYPE = 17
         """
@@ -1850,22 +2292,34 @@ class PhotosDB:
         # close connection and remove temporary files
         conn.close()
 
+        # process face info
+        verbose("Processing face details.")
+        self._process_faceinfo()
+
         # process search info
+        verbose("Processing photo labels.")
         self._process_searchinfo()
 
         # process exif info
+        verbose("Processing EXIF details.")
         self._process_exifinfo()
 
         # process computed scores
+        verbose("Processing computed aesthetic scores.")
         self._process_scoreinfo()
 
+        # process shared comments/likes
+        verbose("Processing comments and likes for shared photos.")
+        self._process_comments()
+
         # done processing, dump debug data if requested
+        verbose("Done processing details from Photos library.")
         if _debug():
             logging.debug("Faces (_dbfaces_uuid):")
             logging.debug(pformat(self._dbfaces_uuid))
 
-            logging.debug("Faces by person (_dbfaces_person):")
-            logging.debug(pformat(self._dbfaces_person))
+            logging.debug("Persons (_dbpersons_pk):")
+            logging.debug(pformat(self._dbpersons_pk))
 
             logging.debug("Keywords by uuid (_dbkeywords_uuid):")
             logging.debug(pformat(self._dbkeywords_uuid))
@@ -2079,16 +2533,26 @@ class PhotosDB:
         hierarchy = _recurse_folder_hierarchy(folders)
         return hierarchy
 
-    def _get_album_uuids(self, shared=False):
+    def _get_album_uuids(self, shared=False, import_session=False):
         """ Return list of album UUIDs found in photos database
         
             Filters out albums in the trash and any special album types
         
         Args:
             shared: boolean; if True, returns shared albums, else normal albums
+            import_session: boolean, if True, returns import session albums, else normal or shared albums
+            Note: flags (shared, import_session) are mutually exclusive
         
+        Raises:
+            ValueError: raised if mutually exclusive flags passed
+
         Returns: list of album UUIDs 
         """
+        if shared and import_session:
+            raise ValueError(
+                "flags are mutually exclusive: pass zero or one of shared, import_session"
+            )
+
         if self._db_version <= _PHOTOS_4_VERSION:
             version4 = True
             if shared:
@@ -2096,11 +2560,21 @@ class PhotosDB:
                     f"Shared albums not implemented for Photos library version {self._db_version}"
                 )
                 return []  # not implemented for _PHOTOS_4_VERSION
+            elif import_session:
+                logging.warning(
+                    f"Import sessions not implemented for Photos library version {self._db_version}"
+                )
+                return []  # not implemented for _PHOTOS_4_VERSION
             else:
                 album_kind = _PHOTOS_4_ALBUM_KIND
         else:
             version4 = False
-            album_kind = _PHOTOS_5_SHARED_ALBUM_KIND if shared else _PHOTOS_5_ALBUM_KIND
+            if shared:
+                album_kind = _PHOTOS_5_SHARED_ALBUM_KIND
+            elif import_session:
+                album_kind = _PHOTOS_5_IMPORT_SESSION_ALBUM_KIND
+            else:
+                album_kind = _PHOTOS_5_ALBUM_KIND
 
         album_list = []
         # look through _dbalbum_details because _dbalbums_album won't have empty albums it
@@ -2150,23 +2624,29 @@ class PhotosDB:
         to_date=None,
         intrash=False,
     ):
-        """ 
-        Return a list of PhotoInfo objects
+        """ Return a list of PhotoInfo objects
         If called with no args, returns the entire database of photos
         If called with args, returns photos matching the args (e.g. keywords, persons, etc.)
         If more than one arg, returns photos matching all the criteria (e.g. keywords AND persons)
         If more than one keyword, uuid, persons, albums is passed, they are treated as "OR" criteria
         e.g. keywords=["wedding","vacation"] returns photos matching either keyword
-        keywords: list of keywords to search for
-        uuid: list of UUIDs to search for
-        persons: list of persons to search for
-        albums: list of album names to search for
-        images: if True, returns image files, if False, does not return images; default is True
-        movies: if True, returns movie files, if False, does not return movies; default is True 
-        from_date: return photos with creation date >= from_date (datetime.datetime object, default None)
-        to_date: return photos with creation date <= to_date (datetime.datetime object, default None)
-        intrash: if True, returns only images in "Recently deleted items" folder, 
-                 if False returns only photos that aren't deleted; default is False
+        from_date and to_date may be either naive or timezone-aware datetime.datetime objects.
+        If naive, timezone will be assumed to be local timezone.
+
+        Args:
+            keywords: list of keywords to search for
+            uuid: list of UUIDs to search for
+            persons: list of persons to search for
+            albums: list of album names to search for
+            images: if True, returns image files, if False, does not return images; default is True
+            movies: if True, returns movie files, if False, does not return movies; default is True 
+            from_date: return photos with creation date >= from_date (datetime.datetime object, default None)
+            to_date: return photos with creation date <= to_date (datetime.datetime object, default None)
+            intrash: if True, returns only images in "Recently deleted items" folder, 
+                     if False returns only photos that aren't deleted; default is False
+
+        Returns:
+            list of PhotoInfo objects
         """
 
         # implementation is a bit kludgy but it works
@@ -2196,7 +2676,9 @@ class PhotosDB:
                         title_set = set()
                         for album_id in self._dbalbum_titles[album]:
                             try:
-                                title_set.update(self._dbalbums_album[album_id])
+                                # _dbalbums_album value is list of tuples: [(uuid, sort order)]
+                                uuid_in_album, _ = zip(*self._dbalbums_album[album_id])
+                                title_set.update(uuid_in_album)
                             except KeyError:
                                 # an empty album will be in _dbalbum_titles but not _dbalbums_album
                                 pass
@@ -2226,8 +2708,13 @@ class PhotosDB:
             if persons:
                 person_set = set()
                 for person in persons:
-                    if person in self._dbfaces_person:
-                        person_set.update(self._dbfaces_person[person])
+                    if person in self._dbpersons_fullname:
+                        for pk in self._dbpersons_fullname[person]:
+                            try:
+                                person_set.update(self._dbfaces_pk[pk])
+                            except KeyError:
+                                # some persons have zero photos so they won't be in _dbfaces_pk
+                                pass
                     else:
                         logging.debug(f"Could not find person '{person}' in database")
                 photos_sets.append(person_set)
@@ -2235,6 +2722,8 @@ class PhotosDB:
             if from_date or to_date:  # sourcery off
                 dsel = self._dbphotos
                 if from_date:
+                    if not datetime_has_tz(from_date):
+                        from_date = datetime_naive_to_local(from_date)
                     dsel = {
                         k: v for k, v in dsel.items() if v["imageDate"] >= from_date
                     }
@@ -2242,6 +2731,8 @@ class PhotosDB:
                         f"Found %i items with from_date {from_date}" % len(dsel)
                     )
                 if to_date:
+                    if not datetime_has_tz(to_date):
+                        to_date = datetime_naive_to_local(to_date)
                     dsel = {k: v for k, v in dsel.items() if v["imageDate"] <= to_date}
                     logging.debug(f"Found %i items with to_date {to_date}" % len(dsel))
                 photos_sets.append(set(dsel.keys()))
@@ -2265,6 +2756,42 @@ class PhotosDB:
             logging.debug(f"photoinfo: {pformat(photoinfo)}")
 
         return photoinfo
+
+    def get_photo(self, uuid):
+        """ Returns a single photo matching uuid
+
+        Arguments:
+            uuid: the UUID of photo to get
+
+        Returns:
+            PhotoInfo instance for photo with UUID matching uuid or None if no match
+        """
+        try:
+            return PhotoInfo(db=self, uuid=uuid, info=self._dbphotos[uuid])
+        except KeyError:
+            return None
+
+    # TODO: add to docs and test
+    def photos_by_uuid(self, uuids):
+        """ Returns a list of photos with UUID in uuids.
+            Does not generate error if invalid or missing UUID passed.
+            This is faster than using PhotosDB.photos if you have list of UUIDs.
+            Returns photos regardless of intrash state.
+
+        Arguments:
+            uuid: list of UUIDs of photos to get
+
+        Returns:
+            list of PhotoInfo instance for photo with UUID matching uuid or [] if no match
+        """
+        photos = []
+        for uuid in uuids:
+            try:
+                photos.append(PhotoInfo(db=self, uuid=uuid, info=self._dbphotos[uuid]))
+            except KeyError:
+                # ignore missing/invlaid UUID
+                pass
+        return photos
 
     def __repr__(self):
         return f"osxphotos.{self.__class__.__name__}(dbfile='{self.db_path}')"

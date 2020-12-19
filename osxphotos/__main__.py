@@ -1,34 +1,42 @@
 """ command line interface for osxphotos """
 import csv
 import datetime
-import functools
 import json
-import logging
 import os
 import os.path
 import pathlib
 import pprint
 import sys
 import time
+import unicodedata
 
 import click
 import yaml
-from pathvalidate import (
-    is_valid_filename,
-    is_valid_filepath,
-    sanitize_filename,
-    sanitize_filepath,
-)
 
 import osxphotos
 
-from ._constants import _EXIF_TOOL_URL, _PHOTOS_4_VERSION, _UNKNOWN_PLACE
-from ._export_db import ExportDB, ExportDBInMemory
+from ._constants import (
+    _EXIF_TOOL_URL,
+    _PHOTOS_4_VERSION,
+    _UNKNOWN_PLACE,
+    DEFAULT_JPEG_QUALITY,
+    DEFAULT_EDITED_SUFFIX,
+    DEFAULT_ORIGINAL_SUFFIX,
+    UNICODE_FORMAT,
+)
 from ._version import __version__
+from .configoptions import (
+    ConfigOptions,
+    ConfigOptionsInvalidError,
+    ConfigOptionsLoadError,
+)
 from .datetime_formatter import DateTimeFormatter
 from .exiftool import get_exiftool_path
+from .export_db import ExportDB, ExportDBInMemory
 from .fileutil import FileUtil, FileUtilNoOp
+from .path_utils import is_valid_filepath, sanitize_filename, sanitize_filepath
 from .photoinfo import ExportResults
+from .photokit import check_photokit_authorization, request_photokit_authorization
 from .phototemplate import TEMPLATE_SUBSTITUTIONS, TEMPLATE_SUBSTITUTIONS_MULTI_VALUED
 
 # global variable to control verbose output
@@ -39,19 +47,33 @@ VERBOSE = False
 OSXPHOTOS_EXPORT_DB = ".osxphotos_export.db"
 
 
-def verbose(*args, **kwargs):
+def verbose_(*args, **kwargs):
+    """ print output if verbose flag set """
     if VERBOSE:
         click.echo(*args, **kwargs)
 
 
+def normalize_unicode(value):
+    """ normalize unicode data """
+    if value is not None:
+        if isinstance(value, tuple):
+            return tuple(unicodedata.normalize(UNICODE_FORMAT, v) for v in value)
+        elif isinstance(value, str):
+            return unicodedata.normalize(UNICODE_FORMAT, value)
+        else:
+            return value
+    else:
+        return None
+
+
 def get_photos_db(*db_options):
-    """ Return path to photos db, select first non-None db_options
-        If no db_options are non-None, try to find library to use in
-        the following order:
-        - last library opened
-        - system library
-        - ~/Pictures/Photos Library.photoslibrary
-        - failing above, returns None
+    """Return path to photos db, select first non-None db_options
+    If no db_options are non-None, try to find library to use in
+    the following order:
+    - last library opened
+    - system library
+    - ~/Pictures/Photos Library.photoslibrary
+    - failing above, returns None
     """
     if db_options:
         for db in db_options:
@@ -75,6 +97,20 @@ def get_photos_db(*db_options):
         return db
     else:
         return None
+
+
+class DateTimeISO8601(click.ParamType):
+
+    name = "DATETIME"
+
+    def convert(self, value, param, ctx):
+        try:
+            return datetime.datetime.fromisoformat(value)
+        except Exception:
+            self.fail(
+                f"Invalid value for --{param.name}: invalid datetime format {value}. "
+                "Valid format: YYYY-MM-DD[*HH[:MM[:SS[.fff[fff]]]][+HH:MM[:SS[.ffffff]]]]"
+            )
 
 
 # Click CLI object & context settings
@@ -110,11 +146,14 @@ class ExportCommand(click.Command):
             + "exported image), osxphotos will detect this as a difference and re-export the original image "
             + "from the library thus overwriting the changes.  If using --update, the exported library "
             + "should be treated as a backup, not a working copy where you intend to make changes. "
+            + "If you do edit or process the exported files and do not want them to be overwritten with"
+            + "subsequent --update, use --ignore-signature which will match filename but not file signature when "
+            + "exporting."
         )
         formatter.write("\n")
         formatter.write_text(
             "Note: The number of files reported for export and the number actually exported "
-            + "may differ due to live photos, associated RAW images, and edited photos which are reported "
+            + "may differ due to live photos, associated raw images, and edited photos which are reported "
             + "in the total photos exported."
         )
         formatter.write("\n")
@@ -132,18 +171,79 @@ class ExportCommand(click.Command):
         formatter.write_text("** Templating System **")
         formatter.write("\n")
         formatter.write_text(
+            """
+Several options, such as --directory, allow you to specify a template 
+which will be rendered to substitute template fields with values from the photo. 
+For example, '{created.month}' would be replaced with the month name of the photo creation date. 
+e.g. 'November'. 
+\n
+Some options supporting templates may be repeated e.g., --keyword-template '{label}' 
+--keyword-template '{media_type}' to add both labels and media types to the 
+keywords.
+\n
+The general format for a template is '{TEMPLATE_FIELD[,[DEFAULT]]}'. 
+Some templates have optional modifiers in form 
+'{[[DELIM]+]TEMPLATE_FIELD[(PATH_SEP)][?VALUE_IF_TRUE][,[DEFAULT]]}'
+\n
+The ',' and DEFAULT value are optional. 
+If TEMPLATE_FIELD results in a null (empty) value, the default is '_'.  
+You may specify an alternate default value by appending ',DEFAULT' after template_field. 
+e.g. '{title,no_title}' would result in 'no_title' if the photo had no title. 
+You may include other text in the template string outside the {} and use more than 
+one template field, e.g. '{created.year} - {created.month}' (e.g. '2020 - November'). 
+\n
+Some template fields such as 'hdr' are boolean and resolve to True or False. 
+These take the form: '{TEMPLATE_FIELD?VALUE_IF_TRUE,VALUE_IF_FALSE}', e.g. 
+{hdr?is_hdr,not_hdr} which would result in 'is_hdr' if photo is an HDR 
+image and 'not_hdr' otherwise.
+\n
+Some template fields such as 'folder_template' are "path-like" in that they join 
+multiple elements into a single path-like string.  For example, if photo is in 
+album Album1 in folder Folder1, '{folder_album}` results in 'Folder1/Album1'. 
+This is so these template fields may be used as paths in --directory. 
+If you intend to use such a field as a string, e.g. in the filename, you may specify 
+a different path separator using the form: '{TEMPLATE_FIELD(PATH_SEP)}'. 
+For example, using the example above, '{folder_album(-)}' would result in 
+'Folder1-Album1' and '{folder_album()}' would result in 
+'Folder1Album1'.
+\n
+Some templates may resolve to more than one value.  For example, a photo can have 
+multiple keywords so '{keyword}' can result in multiple values.  If used in a filename 
+or directory, these templates may result in more than one copy of the photo being exported. 
+For example, if photo has keywords "foo" and "bar", --directory '{keyword}' will result in 
+copies of the photo being exported to 'foo/image_name.jpeg' and 'bar/image_name.jpeg'.  
+\n
+Multi-value template fields such as '{keyword}' may be expanded 'in place' with an optional
+delimiter using the template form '{DELIM+TEMPLATE_FIELD}'.  For example, a photo with 
+keywords 'foo' and 'bar':
+\n
+'{keyword}' renders to 'foo' and 'bar'
+\n
+'{,+keyword}' renders to: 'foo,bar'
+\n
+'{; +keyword}' renders to: 'foo; bar'
+\n
+'{+keyword}' renders to 'foobar'
+\n
+Some template fields such as '{media_type}' use the 'DEFAULT' value to allow customization 
+of the output. For example, '{media_type}' resolves to the special media type of the 
+photo such as 'panorama' or 'selfie'.  You may use the 'DEFAULT' value to override 
+these in form: '{media_type,video=vidéo;time_lapse=vidéo_accélérée}'. 
+In this example, if photo is a time_lapse photo, 'media_type' would resolve to 
+'vidéo_accélérée' instead of 'time_lapse' and video would resolve to 'vidéo' if photo
+is an ordinary video. 
+"""
+        )
+        formatter.write("\n")
+        formatter.write_text(
             "With the --directory and --filename options you may specify a template for the "
             + "export directory or filename, respectively. "
             + "The directory will be appended to the export path specified "
             + "in the export DEST argument to export.  For example, if template is "
-            + "'{created.year}/{created.month}', and export desitnation DEST is "
+            + "'{created.year}/{created.month}', and export destination DEST is "
             + "'/Users/maria/Pictures/export', "
             + "the actual export directory for a photo would be '/Users/maria/Pictures/export/2020/March' "
             + "if the photo was created in March 2020. "
-            + "Some template substitutions may result in more than one value, for example '{album}' if "
-            + "photo is in more than one album or '{keyword}' if photo has more than one keyword. "
-            + "In this case, more than one copy of the photo will be exported, each in a separate directory "
-            + "or with a different filename."
         )
         formatter.write("\n")
         formatter.write_text(
@@ -181,7 +281,11 @@ class ExportCommand(click.Command):
             + "has no value, '_' (underscore) will be used as the default value. For example, in the "
             + "above example, this would result in '2020/_/photoname.jpg' if address was null."
         )
-
+        formatter.write("\n")
+        formatter.write_text(
+            'You may specify a null default (e.g. "" or empty string) by omitting the value after '
+            + 'the comma, e.g. {title,} which would render to "" if title had no value.'
+        )
         formatter.write("\n")
         templ_tuples = [("Substitution", "Description")]
         templ_tuples.extend((k, v) for k, v in TEMPLATE_SUBSTITUTIONS.items())
@@ -297,6 +401,15 @@ def query_options(f):
             default=None,
             multiple=True,
             help="Search for photos with UUID(s).",
+        ),
+        o(
+            "--uuid-from-file",
+            metavar="FILE",
+            default=None,
+            multiple=False,
+            help="Search for photos with UUID(s) loaded from FILE. "
+            "Format is a single UUID per line.  Lines preceeded with # are ignored.",
+            type=click.Path(exists=True),
         ),
         o(
             "--title",
@@ -431,7 +544,7 @@ def query_options(f):
         o(
             "--has-raw",
             is_flag=True,
-            help="Search for photos with both a jpeg and RAW version",
+            help="Search for photos with both a jpeg and raw version",
         ),
         o(
             "--only-movies",
@@ -445,14 +558,18 @@ def query_options(f):
         ),
         o(
             "--from-date",
-            help="Search by start item date, e.g. 2000-01-12T12:00:00 or 2000-12-31 (ISO 8601 w/o TZ).",
-            type=click.DateTime(),
+            help="Search by start item date, e.g. 2000-01-12T12:00:00, 2001-01-12T12:00:00-07:00, or 2000-12-31 (ISO 8601).",
+            type=DateTimeISO8601(),
         ),
         o(
             "--to-date",
-            help="Search by end item date, e.g. 2000-01-12T12:00:00 or 2000-12-31 (ISO 8601 w/o TZ).",
-            type=click.DateTime(),
+            help="Search by end item date, e.g. 2000-01-12T12:00:00, 2001-01-12T12:00:00-07:00, or 2000-12-31 (ISO 8601).",
+            type=DateTimeISO8601(),
         ),
+        o("--has-comment", is_flag=True, help="Search for photos that have comments."),
+        o("--no-comment", is_flag=True, help="Search for photos with no comments."),
+        o("--has-likes", is_flag=True, help="Search for photos that have likes."),
+        o("--no-likes", is_flag=True, help="Search for photos with no likes."),
     ]
     for o in options[::-1]:
         f = o(f)
@@ -485,10 +602,15 @@ def cli(ctx, db, json_, debug):
     help="Use with '--dump photos' to dump only certain UUIDs",
     multiple=True,
 )
+@click.option("--verbose", "-V", "verbose", is_flag=True, help="Print verbose output.")
 @click.pass_obj
 @click.pass_context
-def debug_dump(ctx, cli_obj, db, photos_library, dump, uuid):
+def debug_dump(ctx, cli_obj, db, photos_library, dump, uuid, verbose):
     """ Print out debug info """
+
+    global VERBOSE
+    VERBOSE = bool(verbose)
+
     db = get_photos_db(*photos_library, db, cli_obj.db)
     if db is None:
         click.echo(cli.commands["debug-dump"].get_help(ctx), err=True)
@@ -498,7 +620,7 @@ def debug_dump(ctx, cli_obj, db, photos_library, dump, uuid):
 
     start_t = time.perf_counter()
     print(f"Opening database: {db}")
-    photosdb = osxphotos.PhotosDB(dbfile=db)
+    photosdb = osxphotos.PhotosDB(dbfile=db, verbose=verbose_)
     stop_t = time.perf_counter()
     print(f"Done; took {(stop_t-start_t):.2f} seconds")
 
@@ -520,10 +642,14 @@ def debug_dump(ctx, cli_obj, db, photos_library, dump, uuid):
             print("_dbkeywords_uuid:")
             pprint.pprint(photosdb._dbkeywords_uuid)
         elif attr == "persons":
-            print("_dbfaces_person:")
-            pprint.pprint(photosdb._dbfaces_person)
             print("_dbfaces_uuid:")
             pprint.pprint(photosdb._dbfaces_uuid)
+            print("_dbfaces_pk:")
+            pprint.pprint(photosdb._dbfaces_pk)
+            print("_dbpersons_pk:")
+            pprint.pprint(photosdb._dbpersons_pk)
+            print("_dbpersons_fullname:")
+            pprint.pprint(photosdb._dbpersons_fullname)
         elif attr == "photos":
             if uuid:
                 for uuid_ in uuid:
@@ -540,7 +666,7 @@ def debug_dump(ctx, cli_obj, db, photos_library, dump, uuid):
                 val = getattr(photosdb, attr)
                 print(f"{attr}:")
                 pprint.pprint(val)
-            except:
+            except Exception:
                 print(f"Did not find attribute {attr} in PhotosDB")
 
 
@@ -565,9 +691,9 @@ def keywords(ctx, cli_obj, db, json_, photos_library):
     photosdb = osxphotos.PhotosDB(dbfile=db)
     keywords = {"keywords": photosdb.keywords_as_dict}
     if json_ or cli_obj.json:
-        click.echo(json.dumps(keywords))
+        click.echo(json.dumps(keywords, ensure_ascii=False))
     else:
-        click.echo(yaml.dump(keywords, sort_keys=False))
+        click.echo(yaml.dump(keywords, sort_keys=False, allow_unicode=True))
 
 
 @cli.command()
@@ -594,9 +720,9 @@ def albums(ctx, cli_obj, db, json_, photos_library):
         albums["shared albums"] = photosdb.albums_shared_as_dict
 
     if json_ or cli_obj.json:
-        click.echo(json.dumps(albums))
+        click.echo(json.dumps(albums, ensure_ascii=False))
     else:
-        click.echo(yaml.dump(albums, sort_keys=False))
+        click.echo(yaml.dump(albums, sort_keys=False, allow_unicode=True))
 
 
 @cli.command()
@@ -620,9 +746,9 @@ def persons(ctx, cli_obj, db, json_, photos_library):
     photosdb = osxphotos.PhotosDB(dbfile=db)
     persons = {"persons": photosdb.persons_as_dict}
     if json_ or cli_obj.json:
-        click.echo(json.dumps(persons))
+        click.echo(json.dumps(persons, ensure_ascii=False))
     else:
-        click.echo(yaml.dump(persons, sort_keys=False))
+        click.echo(yaml.dump(persons, sort_keys=False, allow_unicode=True))
 
 
 @cli.command()
@@ -646,9 +772,9 @@ def labels(ctx, cli_obj, db, json_, photos_library):
     photosdb = osxphotos.PhotosDB(dbfile=db)
     labels = {"labels": photosdb.labels_as_dict}
     if json_ or cli_obj.json:
-        click.echo(json.dumps(labels))
+        click.echo(json.dumps(labels, ensure_ascii=False))
     else:
-        click.echo(yaml.dump(labels, sort_keys=False))
+        click.echo(yaml.dump(labels, sort_keys=False, allow_unicode=True))
 
 
 @cli.command()
@@ -706,9 +832,9 @@ def info(ctx, cli_obj, db, json_, photos_library):
     info["persons"] = persons
 
     if cli_obj.json or json_:
-        click.echo(json.dumps(info))
+        click.echo(json.dumps(info, ensure_ascii=False))
     else:
-        click.echo(yaml.dump(info, sort_keys=False))
+        click.echo(yaml.dump(info, sort_keys=False, allow_unicode=True))
 
 
 @cli.command()
@@ -735,12 +861,12 @@ def places(ctx, cli_obj, db, json_, photos_library):
         if photo.place:
             try:
                 place_names[photo.place.name] += 1
-            except:
+            except Exception:
                 place_names[photo.place.name] = 1
         else:
             try:
                 place_names[_UNKNOWN_PLACE] += 1
-            except:
+            except Exception:
                 place_names[_UNKNOWN_PLACE] = 1
 
     # sort by place count
@@ -756,9 +882,9 @@ def places(ctx, cli_obj, db, json_, photos_library):
     # below needed for to make CliRunner work for testing
     cli_json = cli_obj.json if cli_obj is not None else None
     if json_ or cli_json:
-        click.echo(json.dumps(places))
+        click.echo(json.dumps(places, ensure_ascii=False))
     else:
-        click.echo(yaml.dump(places, sort_keys=False))
+        click.echo(yaml.dump(places, sort_keys=False, allow_unicode=True))
 
 
 @cli.command()
@@ -808,8 +934,8 @@ def list_libraries(ctx, cli_obj, json_):
 
 
 def _list_libraries(json_=False, error=True):
-    """ Print list of Photos libraries found on the system. 
-        If json_ == True, print output as JSON (default = False) """
+    """Print list of Photos libraries found on the system.
+    If json_ == True, print output as JSON (default = False)"""
 
     photo_libs = osxphotos.utils.list_photo_libraries()
     sys_lib = osxphotos.utils.get_system_library_path()
@@ -821,7 +947,7 @@ def _list_libraries(json_=False, error=True):
             "system_library": sys_lib,
             "last_library": last_lib,
         }
-        click.echo(json.dumps(libs))
+        click.echo(json.dumps(libs, ensure_ascii=False))
     else:
         last_lib_flag = sys_lib_flag = False
 
@@ -887,6 +1013,7 @@ def query(
     album,
     folder,
     uuid,
+    uuid_from_file,
     title,
     no_title,
     description,
@@ -936,10 +1063,14 @@ def query(
     label,
     deleted,
     deleted_only,
+    has_comment,
+    no_comment,
+    has_likes,
+    no_likes,
 ):
-    """ Query the Photos database using 1 or more search options; 
-        if more than one option is provided, they are treated as "AND" 
-        (e.g. search for photos matching all options).
+    """Query the Photos database using 1 or more search options;
+    if more than one option is provided, they are treated as "AND"
+    (e.g. search for photos matching all options).
     """
 
     # if no query terms, show help and return
@@ -950,6 +1081,7 @@ def query(
         album,
         folder,
         uuid,
+        uuid_from_file,
         edited,
         external_edit,
         uti,
@@ -978,6 +1110,9 @@ def query(
         (panorama, not_panorama),
         (any(place), no_place),
         (deleted, deleted_only),
+        (shared, not_shared),
+        (has_comment, no_comment),
+        (has_likes, no_likes),
     ]
     # print help if no non-exclusive term or a double exclusive term is given
     if any(all(bb) for bb in exclusive) or not any(
@@ -993,6 +1128,12 @@ def query(
         isphoto = False
     if only_photos:
         ismovie = False
+
+    # load UUIDs if necessary and append to any uuids passed with --uuid
+    if uuid_from_file:
+        uuid_list = list(uuid)  # Click option is a tuple
+        uuid_list.extend(load_uuid_from_file(uuid_from_file))
+        uuid = tuple(uuid_list)
 
     # below needed for to make CliRunner work for testing
     cli_db = cli_obj.db if cli_obj is not None else None
@@ -1058,6 +1199,10 @@ def query(
         label=label,
         deleted=deleted,
         deleted_only=deleted_only,
+        has_comment=has_comment,
+        no_comment=no_comment,
+        has_likes=has_likes,
+        no_likes=no_likes,
     )
 
     # below needed for to make CliRunner work for testing
@@ -1067,8 +1212,13 @@ def query(
 
 @cli.command(cls=ExportCommand)
 @DB_OPTION
-@click.option("--verbose", "-V", "verbose_", is_flag=True, help="Print verbose output.")
+@click.option("--verbose", "-V", "verbose", is_flag=True, help="Print verbose output.")
 @query_options
+@click.option(
+    "--missing",
+    is_flag=True,
+    help="Export only photos missing from the Photos library; must be used with --download-missing.",
+)
 @deleted_options
 @click.option(
     "--update",
@@ -1076,15 +1226,29 @@ def query(
     help="Only export new or updated files. See notes below on export and --update.",
 )
 @click.option(
+    "--ignore-signature",
+    is_flag=True,
+    help="When used with --update, ignores file signature when updating files. "
+    "This is useful if you have processed or edited exported photos changing the "
+    "file signature (size & modification date). In this case, --update would normally "
+    "re-export the processed files but with --ignore-signature, files which exist "
+    "in the export directory will not be re-exported.",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
-    help="Dry run (test) the export but don't actually export any files; most useful with --verbose",
+    help="Dry run (test) the export but don't actually export any files; most useful with --verbose.",
 )
 @click.option(
     "--export-as-hardlink",
     is_flag=True,
     help="Hardlink files instead of copying them.  "
     "Cannot be used with --exiftool which creates copies of the files with embedded EXIF data.",
+)
+@click.option(
+    "--touch-file",
+    is_flag=True,
+    help="Sets the file's modification time to match photo date.",
 )
 @click.option(
     "--overwrite",
@@ -1106,6 +1270,11 @@ def query(
     help="Do not export edited version of photo if an edited version exists.",
 )
 @click.option(
+    "--skip-original-if-edited",
+    is_flag=True,
+    help="Do not export original if there is an edited version (exports only the edited version).",
+)
+@click.option(
     "--skip-bursts",
     is_flag=True,
     help="Do not export all associated burst images in the library if a photo is a burst photo.  ",
@@ -1118,9 +1287,81 @@ def query(
 @click.option(
     "--skip-raw",
     is_flag=True,
-    help="Do not export associated RAW images of a RAW/jpeg pair.  "
-    "Note: this does not skip RAW photos if the RAW photo does not have an associated jpeg image "
-    "(e.g. the RAW file was imported to Photos without a jpeg preview).",
+    help="Do not export associated raw images of a RAW+JPEG pair.  "
+    "Note: this does not skip raw photos if the raw photo does not have an associated jpeg image "
+    "(e.g. the raw file was imported to Photos without a jpeg preview).",
+)
+@click.option(
+    "--current-name",
+    is_flag=True,
+    help="Use photo's current filename instead of original filename for export.  "
+    "Note: Starting with Photos 5, all photos are renamed upon import.  By default, "
+    "photos are exported with the the original name they had before import.",
+)
+@click.option(
+    "--convert-to-jpeg",
+    is_flag=True,
+    help="Convert all non-jpeg images (e.g. raw, HEIC, PNG, etc) "
+    "to JPEG upon export.  Only works if your Mac has a GPU.",
+)
+@click.option(
+    "--jpeg-quality",
+    type=click.FloatRange(0.0, 1.0),
+    help="Value in range 0.0 to 1.0 to use with --convert-to-jpeg. "
+    "A value of 1.0 specifies best quality, "
+    "a value of 0.0 specifies maximum compression. "
+    f"Defaults to {DEFAULT_JPEG_QUALITY}",
+)
+@click.option(
+    "--download-missing",
+    is_flag=True,
+    help="Attempt to download missing photos from iCloud. The current implementation uses Applescript "
+    "to interact with Photos to export the photo which will force Photos to download from iCloud if "
+    "the photo does not exist on disk.  This will be slow and will require internet connection. "
+    "This obviously only works if the Photos library is synched to iCloud.  "
+    "Note: --download-missing does not currently export all burst images; "
+    "only the primary photo will be exported--associated burst images will be skipped.",
+)
+@click.option(
+    "--sidecar",
+    default=None,
+    multiple=True,
+    metavar="FORMAT",
+    type=click.Choice(["xmp", "json"], case_sensitive=False),
+    help="Create sidecar for each photo exported; valid FORMAT values: xmp, json; "
+    f"--sidecar json: create JSON sidecar useable by exiftool ({_EXIF_TOOL_URL}) "
+    "The sidecar file can be used to apply metadata to the file with exiftool, for example: "
+    '"exiftool -j=photoname.jpg.json photoname.jpg" '
+    "The sidecar file is named in format photoname.ext.json  "
+    "--sidecar xmp: create XMP sidecar used by Adobe Lightroom, etc."
+    "The sidecar file is named in format photoname.ext.xmp"
+    "The XMP sidecar exports the following tags: Description, Title, Keywords/Tags, "
+    "Subject (set to Keywords + PersonInImage), PersonInImage, CreateDate, ModifyDate, "
+    "GPSLongitude. "
+    "For a list of tags exported in the JSON sidecar, see --exiftool.",
+)
+@click.option(
+    "--exiftool",
+    is_flag=True,
+    help="Use exiftool to write metadata directly to exported photos. "
+    "To use this option, exiftool must be installed and in the path.  "
+    "exiftool may be installed from https://exiftool.org/.  "
+    "Cannot be used with --export-as-hardlink.  Writes the following metadata: "
+    "EXIF:ImageDescription, XMP:Description (see also --description-template); "
+    "XMP:Title; XMP:TagsList, IPTC:Keywords (see also --keyword-template, --person-keyword, --album-keyword); "
+    "XMP:Subject (set to keywords + person in image to mirror Photos' behavior); "
+    "XMP:PersonInImage; EXIF:GPSLatitudeRef; EXIF:GPSLongitudeRef; EXIF:GPSLatitude; EXIF:GPSLongitude; "
+    "EXIF:GPSPosition; EXIF:DateTimeOriginal; EXIF:OffsetTimeOriginal; "
+    "EXIF:ModifyDate (see --ignore-date-modified); IPTC:DateCreated; IPTC:TimeCreated; "
+    "(video files only): QuickTime:CreationDate; QuickTime:CreateDate; QuickTime:ModifyDate (see also --ignore-date-modified); "
+    "QuickTime:GPSCoordinates; UserData:GPSCoordinates.",
+)
+@click.option(
+    "--ignore-date-modified",
+    is_flag=True,
+    help="If used with --exiftool or --sidecar, will ignore the photo "
+    "modification date and set EXIF:ModifyDate to EXIF:DateTimeOriginal; "
+    "this is consistent with how Photos handles the EXIF:ModifyDate tag.",
 )
 @click.option(
     "--person-keyword",
@@ -1159,45 +1400,6 @@ def query(
     "See Templating System below.",
 )
 @click.option(
-    "--current-name",
-    is_flag=True,
-    help="Use photo's current filename instead of original filename for export.  "
-    "Note: Starting with Photos 5, all photos are renamed upon import.  By default, "
-    "photos are exported with the the original name they had before import.",
-)
-@click.option(
-    "--sidecar",
-    default=None,
-    multiple=True,
-    metavar="FORMAT",
-    type=click.Choice(["xmp", "json"], case_sensitive=False),
-    help="Create sidecar for each photo exported; valid FORMAT values: xmp, json; "
-    f"--sidecar json: create JSON sidecar useable by exiftool ({_EXIF_TOOL_URL}) "
-    "The sidecar file can be used to apply metadata to the file with exiftool, for example: "
-    '"exiftool -j=photoname.json photoname.jpg" '
-    "The sidecar file is named in format photoname.json  "
-    "--sidecar xmp: create XMP sidecar used by Adobe Lightroom, etc."
-    "The sidecar file is named in format photoname.xmp",
-)
-@click.option(
-    "--download-missing",
-    is_flag=True,
-    help="Attempt to download missing photos from iCloud. The current implementation uses Applescript "
-    "to interact with Photos to export the photo which will force Photos to download from iCloud if "
-    "the photo does not exist on disk.  This will be slow and will require internet connection. "
-    "This obviously only works if the Photos library is synched to iCloud.  "
-    "Note: --download-missing does not currently export all burst images; "
-    "only the primary photo will be exported--associated burst images will be skipped.",
-)
-@click.option(
-    "--exiftool",
-    is_flag=True,
-    help="Use exiftool to write metadata directly to exported photos. "
-    "To use this option, exiftool must be installed and in the path.  "
-    "exiftool may be installed from https://exiftool.org/.  "
-    "Cannot be used with --export-as-hardlink.",
-)
-@click.option(
     "--directory",
     metavar="DIRECTORY",
     default=None,
@@ -1216,18 +1418,65 @@ def query(
 @click.option(
     "--edited-suffix",
     metavar="SUFFIX",
-    default="_edited",
-    help="Optional suffix for naming edited photos.  Default name for edited photos is in form "
+    help="Optional suffix template for naming edited photos.  Default name for edited photos is in form "
     "'photoname_edited.ext'. For example, with '--edited-suffix _bearbeiten', the edited photo "
-    "would be named 'photoname_bearbeiten.ext'.  The default suffix is '_edited'.",
+    f"would be named 'photoname_bearbeiten.ext'.  The default suffix is '{DEFAULT_EDITED_SUFFIX}'. "
+    "Multi-value templates (see Templating System) are not permitted with --edited-suffix.",
 )
 @click.option(
-    "--no-extended-attributes",
+    "--original-suffix",
+    metavar="SUFFIX",
+    help="Optional suffix template for naming original photos.  Default name for original photos is in form "
+    "'filename.ext'. For example, with '--original-suffix _original', the original photo "
+    "would be named 'filename_original.ext'.  The default suffix is '' (no suffix). "
+    "Multi-value templates (see Templating System) are not permitted with --original-suffix.",
+)
+@click.option(
+    "--use-photos-export",
     is_flag=True,
-    default=False,
-    help="Don't copy extended attributes when exporting.  You only need this if exporting "
-    "to a filesystem that doesn't support Mac OS extended attributes.  Only use this if you get "
-    "an error while exporting.",
+    help="Force the use of AppleScript or PhotoKit to export even if not missing (see also '--download-missing' and '--use-photokit').",
+)
+@click.option(
+    "--use-photokit",
+    is_flag=True,
+    help="Use with '--download-missing' or '--use-photos-export' to use direct Photos interface instead of AppleScript to export. "
+    "Highly experimental alpha feature; does not work with iTerm2 (use with Terminal.app). "
+    "This is faster and more reliable than the default AppleScript interface.",
+)
+@click.option(
+    "--report",
+    metavar="<path to export report>",
+    help="Write a CSV formatted report of all files that were exported.",
+    type=click.Path(),
+)
+@click.option(
+    "--cleanup",
+    is_flag=True,
+    help="Cleanup export directory by deleting any files which were not included in this export set. "
+    "For example, photos which had previously been exported and were subsequently deleted in Photos.",
+)
+@click.option(
+    "--load-config",
+    required=False,
+    metavar="<config file path>",
+    default=None,
+    help=(
+        "Load options from file as written with --save-config. "
+        "This allows you to save a complex export command to file for later reuse. "
+        "For example: 'osxphotos export <lots of options here> --save-config osxphotos.toml' then "
+        " 'osxphotos export /path/to/export --load-config osxphotos.toml'. "
+        "If any other command line options are used in conjunction with --load-config, "
+        "they will override the corresponding values in the config file."
+    ),
+    type=click.Path(exists=True),
+)
+@click.option(
+    "--save-config",
+    required=False,
+    metavar="<config file path>",
+    default=None,
+    help=("Save options to file for use with --load-config. File format is TOML."),
+    type=click.Path(),
 )
 @DB_ARGUMENT
 @click.argument("dest", nargs=1, type=click.Path(exists=True))
@@ -1243,6 +1492,7 @@ def export(
     album,
     folder,
     uuid,
+    uuid_from_file,
     title,
     no_title,
     description,
@@ -1259,13 +1509,17 @@ def export(
     not_shared,
     from_date,
     to_date,
-    verbose_,
+    verbose,
+    missing,
     update,
+    ignore_signature,
     dry_run,
     export_as_hardlink,
+    touch_file,
     overwrite,
     export_by_date,
     skip_edited,
+    skip_original_if_edited,
     skip_bursts,
     skip_live,
     skip_raw,
@@ -1274,6 +1528,8 @@ def export(
     keyword_template,
     description_template,
     current_name,
+    convert_to_jpeg,
+    jpeg_quality,
     sidecar,
     only_photos,
     only_movies,
@@ -1284,6 +1540,7 @@ def export(
     download_missing,
     dest,
     exiftool,
+    ignore_date_modified,
     portrait,
     not_portrait,
     screenshot,
@@ -1302,56 +1559,219 @@ def export(
     directory,
     filename_template,
     edited_suffix,
+    original_suffix,
     place,
     no_place,
-    no_extended_attributes,
+    has_comment,
+    no_comment,
+    has_likes,
+    no_likes,
     label,
     deleted,
     deleted_only,
+    use_photos_export,
+    use_photokit,
+    report,
+    cleanup,
+    load_config,
+    save_config,
 ):
-    """ Export photos from the Photos database.
-        Export path DEST is required.
-        Optionally, query the Photos database using 1 or more search options; 
-        if more than one option is provided, they are treated as "AND" 
-        (e.g. search for photos matching all options).
-        If no query options are provided, all photos will be exported.
-        By default, all versions of all photos will be exported including edited
-        versions, live photo movies, burst photos, and associated RAW images. 
-        See --skip-edited, --skip-live, --skip-bursts, and --skip-raw options
-        to modify this behavior. 
+    """Export photos from the Photos database.
+    Export path DEST is required.
+    Optionally, query the Photos database using 1 or more search options;
+    if more than one option is provided, they are treated as "AND"
+    (e.g. search for photos matching all options).
+    If no query options are provided, all photos will be exported.
+    By default, all versions of all photos will be exported including edited
+    versions, live photo movies, burst photos, and associated raw images.
+    See --skip-edited, --skip-live, --skip-bursts, and --skip-raw options
+    to modify this behavior.
     """
 
+    # NOTE: because of the way ConfigOptions works, Click options must not
+    # set defaults which are not None or False. If defaults need to be set
+    # do so below after load_config and save_config are handled.
+    cfg = ConfigOptions(
+        "export",
+        locals(),
+        ignore=["ctx", "cli_obj", "dest", "load_config", "save_config"],
+    )
+
     global VERBOSE
-    VERBOSE = True if verbose_ else False
+    VERBOSE = bool(verbose)
+
+    if load_config:
+        try:
+            cfg.load_from_file(load_config)
+        except ConfigOptionsLoadError as e:
+            click.echo(
+                f"Error parsing {load_config} config file: {e.message}", err=True
+            )
+            raise click.Abort()
+
+        # re-set the local function vars to the corresponding config value
+        # this isn't elegant but avoids having to rewrite this function to use cfg.varname for every parameter
+        db = cfg.db
+        photos_library = cfg.photos_library
+        keyword = cfg.keyword
+        person = cfg.person
+        album = cfg.album
+        folder = cfg.folder
+        uuid = cfg.uuid
+        uuid_from_file = cfg.uuid_from_file
+        title = cfg.title
+        no_title = cfg.no_title
+        description = cfg.description
+        no_description = cfg.no_description
+        uti = cfg.uti
+        ignore_case = cfg.ignore_case
+        edited = cfg.edited
+        external_edit = cfg.external_edit
+        favorite = cfg.favorite
+        not_favorite = cfg.not_favorite
+        hidden = cfg.hidden
+        not_hidden = cfg.not_hidden
+        shared = cfg.shared
+        not_shared = cfg.not_shared
+        from_date = cfg.from_date
+        to_date = cfg.to_date
+        verbose = cfg.verbose
+        missing = cfg.missing
+        update = cfg.update
+        ignore_signature = cfg.ignore_signature
+        dry_run = cfg.dry_run
+        export_as_hardlink = cfg.export_as_hardlink
+        touch_file = cfg.touch_file
+        overwrite = cfg.overwrite
+        export_by_date = cfg.export_by_date
+        skip_edited = cfg.skip_edited
+        skip_original_if_edited = cfg.skip_original_if_edited
+        skip_bursts = cfg.skip_bursts
+        skip_live = cfg.skip_live
+        skip_raw = cfg.skip_raw
+        person_keyword = cfg.person_keyword
+        album_keyword = cfg.album_keyword
+        keyword_template = cfg.keyword_template
+        description_template = cfg.description_template
+        current_name = cfg.current_name
+        convert_to_jpeg = cfg.convert_to_jpeg
+        jpeg_quality = cfg.jpeg_quality
+        sidecar = cfg.sidecar
+        only_photos = cfg.only_photos
+        only_movies = cfg.only_movies
+        burst = cfg.burst
+        not_burst = cfg.not_burst
+        live = cfg.live
+        not_live = cfg.not_live
+        download_missing = cfg.download_missing
+        exiftool = cfg.exiftool
+        ignore_date_modified = cfg.ignore_date_modified
+        portrait = cfg.portrait
+        not_portrait = cfg.not_portrait
+        screenshot = cfg.screenshot
+        not_screenshot = cfg.not_screenshot
+        slow_mo = cfg.slow_mo
+        not_slow_mo = cfg.not_slow_mo
+        time_lapse = cfg.time_lapse
+        not_time_lapse = cfg.not_time_lapse
+        hdr = cfg.hdr
+        not_hdr = cfg.not_hdr
+        selfie = cfg.selfie
+        not_selfie = cfg.not_selfie
+        panorama = cfg.panorama
+        not_panorama = cfg.not_panorama
+        has_raw = cfg.has_raw
+        directory = cfg.directory
+        filename_template = cfg.filename_template
+        edited_suffix = cfg.edited_suffix
+        original_suffix = cfg.original_suffix
+        place = cfg.place
+        no_place = cfg.no_place
+        has_comment = cfg.has_comment
+        no_comment = cfg.no_comment
+        has_likes = cfg.has_likes
+        no_likes = cfg.no_likes
+        label = cfg.label
+        deleted = cfg.deleted
+        deleted_only = cfg.deleted_only
+        use_photos_export = cfg.use_photos_export
+        use_photokit = cfg.use_photokit
+        report = cfg.report
+        cleanup = cfg.cleanup
+
+        # config file might have changed verbose
+        VERBOSE = bool(verbose)
+        verbose_(f"Loaded options from file {load_config}")
+
+    exclusive_options = [
+        ("favorite", "not_favorite"),
+        ("hidden", "not_hidden"),
+        ("title", "no_title"),
+        ("description", "no_description"),
+        ("only_photos", "only_movies"),
+        ("burst", "not_burst"),
+        ("live", "not_live"),
+        ("portrait", "not_portrait"),
+        ("screenshot", "not_screenshot"),
+        ("slow_mo", "not_slow_mo"),
+        ("time_lapse", "not_time_lapse"),
+        ("hdr", "not_hdr"),
+        ("selfie", "not_selfie"),
+        ("panorama", "not_panorama"),
+        ("export_by_date", "directory"),
+        ("export_as_hardlink", "exiftool"),
+        ("place", "no_place"),
+        ("deleted", "deleted_only"),
+        ("skip_edited", "skip_original_if_edited"),
+        ("export_as_hardlink", "convert_to_jpeg"),
+        ("export_as_hardlink", "download_missing"),
+        ("shared", "not_shared"),
+        ("has_comment", "no_comment"),
+        ("has_likes", "no_likes"),
+    ]
+    dependent_options = [
+        ("missing", ("download_missing", "use_photos_export")),
+        ("jpeg_quality", ("convert_to_jpeg")),
+        ("ignore_signature", ("update")),
+    ]
+    try:
+        cfg.validate(exclusive=exclusive_options, dependent=dependent_options, cli=True)
+    except ConfigOptionsInvalidError as e:
+        click.echo(f"Incompatible export options: {e.message}", err=True)
+        raise click.Abort()
+
+    if save_config:
+        verbose_(f"Saving options to file {save_config}")
+        cfg.write_to_file(save_config)
+
+    # set defaults for options that need them
+    jpeg_quality = DEFAULT_JPEG_QUALITY if jpeg_quality is None else jpeg_quality
+    edited_suffix = DEFAULT_EDITED_SUFFIX if edited_suffix is None else edited_suffix
+    original_suffix = (
+        DEFAULT_ORIGINAL_SUFFIX if original_suffix is None else original_suffix
+    )
 
     if not os.path.isdir(dest):
-        sys.exit("DEST must be valid path")
+        click.echo(f"DEST {dest} must be valid path", err=True)
+        raise click.Abort()
 
-    # sanity check input args
-    exclusive = [
-        (favorite, not_favorite),
-        (hidden, not_hidden),
-        (any(title), no_title),
-        (any(description), no_description),
-        (only_photos, only_movies),
-        (burst, not_burst),
-        (live, not_live),
-        (portrait, not_portrait),
-        (screenshot, not_screenshot),
-        (slow_mo, not_slow_mo),
-        (time_lapse, not_time_lapse),
-        (hdr, not_hdr),
-        (selfie, not_selfie),
-        (panorama, not_panorama),
-        (export_by_date, directory),
-        (export_as_hardlink, exiftool),
-        (any(place), no_place),
-        (deleted, deleted_only),
-    ]
-    if any(all(bb) for bb in exclusive):
-        click.echo("Incompatible export options", err=True)
-        click.echo(cli.commands["export"].get_help(ctx), err=True)
-        return
+    dest = str(pathlib.Path(dest).resolve())
+
+    if report and os.path.isdir(report):
+        click.echo(f"report is a directory, must be file name", err=True)
+        raise click.Abort()
+
+    # if use_photokit and not check_photokit_authorization():
+    #     click.echo(
+    #         "Requesting access to use your Photos library. Click 'OK' on the dialog box to grant access."
+    #     )
+    #     request_photokit_authorization()
+    #     click.confirm("Have you granted access?")
+    #     if not check_photokit_authorization():
+    #         click.echo(
+    #             "Failed to get access to the Photos library which is needed with `--use-photokit`."
+    #         )
+    #         return
 
     # initialize export flags
     # by default, will export all versions of photos unless skip flag is set
@@ -1376,6 +1796,12 @@ def export(
         isphoto = False
     if only_photos:
         ismovie = False
+
+    # load UUIDs if necessary and append to any uuids passed with --uuid
+    if uuid_from_file:
+        uuid_list = list(uuid)  # Click option is a tuple
+        uuid_list.extend(load_uuid_from_file(uuid_from_file))
+        uuid = tuple(uuid_list)
 
     # below needed for to make CliRunner work for testing
     cli_db = cli_obj.db if cli_obj is not None else None
@@ -1408,12 +1834,21 @@ def export(
 
     if dry_run:
         export_db = ExportDBInMemory(export_db_path)
-        # echo = functools.partial(click.echo, err=True)
-        # fileutil = FileUtilNoOp(verbose=echo)
         fileutil = FileUtilNoOp
     else:
         export_db = ExportDB(export_db_path)
         fileutil = FileUtil
+
+    if verbose_:
+        if export_db.was_created:
+            verbose_(f"Created export database {export_db_path}")
+        else:
+            verbose_(f"Using export database {export_db_path}")
+        upgraded = export_db.was_upgraded
+        if upgraded:
+            verbose_(
+                f"Upgraded export database {export_db_path} from version {upgraded[0]} to {upgraded[1]}"
+            )
 
     photos = _query(
         db=db,
@@ -1433,7 +1868,7 @@ def export(
         not_favorite=not_favorite,
         hidden=hidden,
         not_hidden=not_hidden,
-        missing=None,  # missing -- won't export these but will warn user
+        missing=missing,
         not_missing=None,
         shared=shared,
         not_shared=not_shared,
@@ -1470,9 +1905,12 @@ def export(
         label=label,
         deleted=deleted,
         deleted_only=deleted_only,
+        has_comment=has_comment,
+        no_comment=no_comment,
+        has_likes=has_likes,
+        no_likes=no_likes,
     )
 
-    results_exported = []
     if photos:
         if export_bursts:
             # add the burst_photos to the export set
@@ -1491,29 +1929,39 @@ def export(
         # because the original code used --original-name as an option
         original_name = not current_name
 
+        results_exported = []
         results_new = []
         results_updated = []
         results_skipped = []
         results_exif_updated = []
-        if verbose_:
+        results_touched = []
+        results_converted = []
+        results_sidecar_json_written = []
+        results_sidecar_json_skipped = []
+        results_sidecar_xmp_written = []
+        results_sidecar_xmp_skipped = []
+        results_missing = []
+        results_error = []
+        if verbose:
             for p in photos:
                 results = export_photo(
                     photo=p,
                     dest=dest,
-                    verbose_=verbose_,
+                    verbose=verbose,
                     export_by_date=export_by_date,
                     sidecar=sidecar,
                     update=update,
+                    ignore_signature=ignore_signature,
                     export_as_hardlink=export_as_hardlink,
                     overwrite=overwrite,
                     export_edited=export_edited,
+                    skip_original_if_edited=skip_original_if_edited,
                     original_name=original_name,
                     export_live=export_live,
                     download_missing=download_missing,
                     exiftool=exiftool,
                     directory=directory,
                     filename_template=filename_template,
-                    no_extended_attributes=no_extended_attributes,
                     export_raw=export_raw,
                     album_keyword=album_keyword,
                     person_keyword=person_keyword,
@@ -1522,13 +1970,34 @@ def export(
                     export_db=export_db,
                     fileutil=fileutil,
                     dry_run=dry_run,
+                    touch_file=touch_file,
                     edited_suffix=edited_suffix,
+                    original_suffix=original_suffix,
+                    use_photos_export=use_photos_export,
+                    convert_to_jpeg=convert_to_jpeg,
+                    jpeg_quality=jpeg_quality,
+                    ignore_date_modified=ignore_date_modified,
+                    use_photokit=use_photokit,
                 )
                 results_exported.extend(results.exported)
                 results_new.extend(results.new)
                 results_updated.extend(results.updated)
                 results_skipped.extend(results.skipped)
                 results_exif_updated.extend(results.exif_updated)
+                results_touched.extend(results.touched)
+                results_converted.extend(results.converted_to_jpeg)
+                results_sidecar_json_written.extend(results.sidecar_json_written)
+                results_sidecar_json_skipped.extend(results.sidecar_json_skipped)
+                results_sidecar_xmp_written.extend(results.sidecar_xmp_written)
+                results_sidecar_xmp_skipped.extend(results.sidecar_xmp_skipped)
+                results_missing.extend(results.missing)
+                results_error.extend(results.error)
+
+                # if convert_to_jpeg and p.isphoto and p.uti != "public.jpeg":
+                #     for photo_file in set(
+                #         results.exported + results.updated + results.exif_updated
+                #     ):
+                #         verbose_(f"Converting {photo_file} to jpeg")
 
         else:
             # show progress bar
@@ -1537,20 +2006,21 @@ def export(
                     results = export_photo(
                         photo=p,
                         dest=dest,
-                        verbose_=verbose_,
+                        verbose=verbose,
                         export_by_date=export_by_date,
                         sidecar=sidecar,
                         update=update,
+                        ignore_signature=ignore_signature,
                         export_as_hardlink=export_as_hardlink,
                         overwrite=overwrite,
                         export_edited=export_edited,
+                        skip_original_if_edited=skip_original_if_edited,
                         original_name=original_name,
                         export_live=export_live,
                         download_missing=download_missing,
                         exiftool=exiftool,
                         directory=directory,
                         filename_template=filename_template,
-                        no_extended_attributes=no_extended_attributes,
                         export_raw=export_raw,
                         album_keyword=album_keyword,
                         person_keyword=person_keyword,
@@ -1559,31 +2029,106 @@ def export(
                         export_db=export_db,
                         fileutil=fileutil,
                         dry_run=dry_run,
+                        touch_file=touch_file,
                         edited_suffix=edited_suffix,
+                        original_suffix=original_suffix,
+                        use_photos_export=use_photos_export,
+                        convert_to_jpeg=convert_to_jpeg,
+                        jpeg_quality=jpeg_quality,
+                        ignore_date_modified=ignore_date_modified,
+                        use_photokit=use_photokit,
                     )
                     results_exported.extend(results.exported)
                     results_new.extend(results.new)
                     results_updated.extend(results.updated)
                     results_skipped.extend(results.skipped)
                     results_exif_updated.extend(results.exif_updated)
-        stop_time = time.perf_counter()
+                    results_touched.extend(results.touched)
+                    results_converted.extend(results.converted_to_jpeg)
+                    results_sidecar_json_written.extend(results.sidecar_json_written)
+                    results_sidecar_json_skipped.extend(results.sidecar_json_skipped)
+                    results_sidecar_xmp_written.extend(results.sidecar_xmp_written)
+                    results_sidecar_xmp_skipped.extend(results.sidecar_xmp_skipped)
+                    results_missing.extend(results.missing)
+                    results_error.extend(results.error)
+
         # print summary results
-        if update:
-            photo_str_new = "photos" if len(results_new) != 1 else "photo"
-            photo_str_updated = "photos" if len(results_new) != 1 else "photo"
-            photo_str_skipped = "photos" if len(results_skipped) != 1 else "photo"
-            photo_str_exif_updated = (
-                "photos" if len(results_exif_updated) != 1 else "photo"
+        # print(f"results_exported: {results_exported}")
+        # print(f"results_new: {results_new}")
+        # print(f"results_updated: {results_updated}")
+        # print(f"results_skipped: {results_skipped}")
+        # print(f"results_exif_updated: {results_exif_updated}")
+        # print(f"results_touched: {results_touched}")
+        # print(f"results_converted: {results_converted}")
+        # print(f"results_sidecar_json_written: {results_sidecar_json_written}")
+        # print(f"results_sidecar_json_skipped: {results_sidecar_json_skipped}")
+        # print(f"results_sidecar_xmp_written: {results_sidecar_xmp_written}")
+        # print(f"results_sidecar_xmp_skipped: {results_sidecar_xmp_skipped}")
+        # print(f"results_missing: {results_missing}")
+        # print(f"results_error: {results_error}")
+
+        if cleanup:
+            all_files = (
+                results_exported
+                + results_skipped
+                + results_exif_updated
+                + results_touched
+                + results_converted
+                + results_sidecar_json_written
+                + results_sidecar_json_skipped
+                + results_sidecar_xmp_written
+                + results_sidecar_xmp_skipped
+                # include missing so a file that was already in export directory
+                # but was missing on --update doesn't get deleted
+                # (better to have old version than none)
+                + results_missing
+                + [str(pathlib.Path(export_db_path).resolve())]
             )
-            click.echo(
-                f"Exported: {len(results_new)} {photo_str_new}, "
-                + f"updated: {len(results_updated)} {photo_str_updated}, "
-                + f"skipped: {len(results_skipped)} {photo_str_skipped}, "
-                + f"updated EXIF data: {len(results_exif_updated)} {photo_str_exif_updated}"
+            click.echo(f"Cleaning up {dest}")
+            (cleaned_files, cleaned_dirs) = cleanup_files(dest, all_files, fileutil)
+            file_str = "files" if cleaned_files != 1 else "file"
+            dir_str = "directories" if cleaned_dirs != 1 else "directory"
+            click.echo(f"Deleted: {cleaned_files} {file_str}, {cleaned_dirs} {dir_str}")
+
+        if report:
+            verbose_(f"Writing export report to {report}")
+            write_export_report(
+                report,
+                results_exported=results_exported,
+                results_new=results_new,
+                results_updated=results_updated,
+                results_skipped=results_skipped,
+                results_exif_updated=results_exif_updated,
+                results_touched=results_touched,
+                results_converted=results_converted,
+                results_sidecar_json_written=results_sidecar_json_written,
+                results_sidecar_json_skipped=results_sidecar_json_skipped,
+                results_sidecar_xmp_written=results_sidecar_xmp_written,
+                results_sidecar_xmp_skipped=results_sidecar_xmp_skipped,
+                results_missing=results_missing,
+                results_error=results_error,
+            )
+
+        photo_str_total = "photos" if len(photos) != 1 else "photo"
+        if update:
+            summary = (
+                f"Processed: {len(photos)} {photo_str_total}, "
+                f"exported: {len(results_new)}, "
+                f"updated: {len(results_updated)}, "
+                f"skipped: {len(results_skipped)}, "
+                f"updated EXIF data: {len(results_exif_updated)}, "
             )
         else:
-            photo_str = "photos" if len(results_exported) != 1 else "photo"
-            click.echo(f"Exported: {len(results_exported)} {photo_str}")
+            summary = (
+                f"Processed: {len(photos)} {photo_str_total}, "
+                f"exported: {len(results_exported)}, "
+            )
+        summary += f"missing: {len(results_missing)}, "
+        summary += f"error: {len(results_error)}"
+        if touch_file:
+            summary += f", touched date: {len(results_touched)}"
+        click.echo(summary)
+        stop_time = time.perf_counter()
         click.echo(f"Elapsed time: {(stop_time-start_time):.3f} seconds")
     else:
         click.echo("Did not find any photos to export")
@@ -1765,13 +2310,17 @@ def _query(
     label=None,
     deleted=False,
     deleted_only=False,
+    has_comment=False,
+    no_comment=False,
+    has_likes=False,
+    no_likes=False,
 ):
-    """ run a query against PhotosDB to extract the photos based on user supply criteria 
-        used by query and export commands 
-        arguments must be passed in same order as query and export 
-        if either is modified, need to ensure all three functions are updated """
+    """run a query against PhotosDB to extract the photos based on user supply criteria
+    used by query and export commands
+    arguments must be passed in same order as query and export
+    if either is modified, need to ensure all three functions are updated"""
 
-    photosdb = osxphotos.PhotosDB(dbfile=db)
+    photosdb = osxphotos.PhotosDB(dbfile=db, verbose=verbose_)
     if deleted or deleted_only:
         photos = photosdb.photos(
             uuid=uuid,
@@ -1791,6 +2340,15 @@ def _query(
             from_date=from_date,
             to_date=to_date,
         )
+
+    person = normalize_unicode(person)
+    keyword = normalize_unicode(keyword)
+    album = normalize_unicode(album)
+    folder = normalize_unicode(folder)
+    title = normalize_unicode(title)
+    description = normalize_unicode(description)
+    place = normalize_unicode(place)
+    label = normalize_unicode(label)
 
     if album:
         photos = get_photos_by_attribute(photos, "albums", album, ignore_case)
@@ -1915,7 +2473,7 @@ def _query(
         photos = [p for p in photos if not p.shared]
 
     if uti:
-        photos = [p for p in photos if uti in p.uti]
+        photos = [p for p in photos if uti in p.uti_original]
 
     if burst:
         photos = [p for p in photos if p.burst]
@@ -1975,6 +2533,16 @@ def _query(
     if has_raw:
         photos = [p for p in photos if p.has_raw]
 
+    if has_comment:
+        photos = [p for p in photos if p.comments]
+    elif no_comment:
+        photos = [p for p in photos if not p.comments]
+
+    if has_likes:
+        photos = [p for p in photos if p.likes]
+    elif no_likes:
+        photos = [p for p in photos if not p.likes]
+
     return photos
 
 
@@ -1982,7 +2550,7 @@ def get_photos_by_attribute(photos, attribute, values, ignore_case):
     """Search for photos based on values being in PhotoInfo.attribute
 
     Args:
-        photos: a list of PhotoInfo objects 
+        photos: a list of PhotoInfo objects
         attribute: str, name of PhotoInfo attribute to search (e.g. keywords, persons, etc)
         values: list of values to search in property
         ignore_case: ignore case when searching
@@ -2009,20 +2577,21 @@ def get_photos_by_attribute(photos, attribute, values, ignore_case):
 def export_photo(
     photo=None,
     dest=None,
-    verbose_=None,
+    verbose=None,
     export_by_date=None,
     sidecar=None,
     update=None,
+    ignore_signature=None,
     export_as_hardlink=None,
     overwrite=None,
     export_edited=None,
+    skip_original_if_edited=None,
     original_name=None,
     export_live=None,
     download_missing=None,
     exiftool=None,
     directory=None,
     filename_template=None,
-    no_extended_attributes=None,
     export_raw=None,
     album_keyword=None,
     person_keyword=None,
@@ -2031,14 +2600,21 @@ def export_photo(
     export_db=None,
     fileutil=FileUtil,
     dry_run=None,
+    touch_file=None,
     edited_suffix="_edited",
+    original_suffix="",
+    use_photos_export=False,
+    convert_to_jpeg=False,
+    jpeg_quality=1.0,
+    ignore_date_modified=False,
+    use_photokit=False,
 ):
-    """ Helper function for export that does the actual export
+    """Helper function for export that does the actual export
 
     Args:
         photo: PhotoInfo object
         dest: destination path as string
-        verbose_: boolean; print verbose output
+        verbose: boolean; print verbose output
         export_by_date: boolean; create export folder in form dest/YYYY/MM/DD
         sidecar: list zero, 1 or 2 of ["json","xmp"] of sidecar variety to export
         export_as_hardlink: boolean; hardlink files instead of copying them
@@ -2050,8 +2626,9 @@ def export_photo(
         exiftool: use exiftool to write EXIF metadata directly to exported photo
         directory: template used to determine output directory
         filename_template: template use to determine output file
-        no_extended_attributes: boolean; if True, exports photo without preserving extended attributes
-        export_raw: boolean; if True exports RAW image associate with the photo
+        export_raw: boolean; if True exports raw image associate with the photo
+        export_edited: boolean; if True exports edited version of photo if there is one
+        skip_original_if_edited: boolean; if True does not export original if photo has been edited
         album_keyword: boolean; if True, exports album names as keywords in metadata
         person_keyword: boolean; if True, exports person names as keywords in metadata
         keyword_template: list of strings; if provided use rendered template strings as keywords
@@ -2059,37 +2636,106 @@ def export_photo(
         export_db: export database instance compatible with ExportDB_ABC
         fileutil: file util class compatible with FileUtilABC
         dry_run: boolean; if True, doesn't actually export or update any files
+        touch_file: boolean; sets file's modification time to match photo date
+        use_photos_export: boolean; if True forces the use of AppleScript to export even if photo not missing
+        convert_to_jpeg: boolean; if True, converts non-jpeg images to jpeg
+        jpeg_quality: float in range 0.0 <= jpeg_quality <= 1.0.  A value of 1.0 specifies use best quality, a value of 0.0 specifies use maximum compression.
+        ignore_date_modified: if True, sets EXIF:ModifyDate to EXIF:DateTimeOriginal even if date_modified is set
 
     Returns:
         list of path(s) of exported photo or None if photo was missing
-    
+
     Raises:
         ValueError on invalid filename_template
     """
     global VERBOSE
-    VERBOSE = True if verbose_ else False
+    VERBOSE = bool(verbose)
 
-    if not download_missing:
-        if photo.ismissing:
-            space = " " if not verbose_ else ""
-            verbose(f"{space}Skipping missing photo {photo.filename}")
-            return ExportResults([], [], [], [], [])
-        elif not os.path.exists(photo.path):
-            space = " " if not verbose_ else ""
-            verbose(
-                f"{space}WARNING: file {photo.path} is missing but ismissing=False, "
-                f"skipping {photo.filename}"
+    results_exported = []
+    results_new = []
+    results_updated = []
+    results_skipped = []
+    results_exif_updated = []
+    results_touched = []
+    results_converted = []
+    results_sidecar_json_written = []
+    results_sidecar_json_skipped = []
+    results_sidecar_xmp_written = []
+    results_sidecar_xmp_skipped = []
+    results_error = []
+    results_missing = []
+
+    export_original = not (skip_original_if_edited and photo.hasadjustments)
+
+    # can't export edited if photo doesn't have edited versions
+    export_edited = export_edited if photo.hasadjustments else False
+
+    # slow_mo photos will always have hasadjustments=True even if not edited
+    if photo.hasadjustments and photo.path_edited is None:
+        if photo.slow_mo:
+            export_original = True
+            export_edited = False
+        elif not download_missing:
+            # requested edited version but it's missing, download original
+            export_original = True
+            export_edited = False
+            verbose_(
+                f"Edited file for {photo.original_filename} is missing, exporting original"
             )
-            return ExportResults([], [], [], [], [])
-    elif photo.ismissing and not photo.iscloudasset or not photo.incloud:
-        verbose(
-            f"Skipping missing {photo.filename}: not iCloud asset or missing from cloud"
-        )
-        return ExportResults([], [], [], [], [])
+
+    # check for missing photos before downloading
+    missing_original = False
+    missing_edited = False
+    if download_missing:
+        if (
+            (photo.ismissing or photo.path is None)
+            and not photo.iscloudasset
+            and not photo.incloud
+        ):
+            missing_original = True
+        if (
+            photo.hasadjustments
+            and photo.path_edited is None
+            and not photo.iscloudasset
+            and not photo.incloud
+        ):
+            missing_edited = True
+    else:
+        if photo.ismissing or photo.path is None:
+            missing_original = True
+        if photo.hasadjustments and photo.path_edited is None:
+            missing_edited = True
 
     filenames = get_filenames_from_template(photo, filename_template, original_name)
     for filename in filenames:
-        verbose(f"Exporting {photo.filename} as {filename}")
+        if original_suffix:
+            rendered_suffix, unmatched = photo.render_template(
+                original_suffix, filename=True
+            )
+            if not rendered_suffix or unmatched:
+                raise click.BadOptionUsage(
+                    "original_suffix",
+                    f"Invalid template for --original-suffix '{original_suffix}': results={rendered_suffix} unmatched={unmatched}",
+                )
+            if len(rendered_suffix) > 1:
+                raise click.BadOptionUsage(
+                    "original_suffix",
+                    f"Invalid template for --original-suffix: may not use multi-valued templates: '{original_suffix}': results={rendered_suffix}",
+                )
+            rendered_suffix = rendered_suffix[0]
+
+            original_filename = pathlib.Path(filename)
+            original_filename = (
+                original_filename.parent
+                / f"{original_filename.stem}{rendered_suffix}{original_filename.suffix}"
+            )
+            original_filename = str(original_filename)
+        else:
+            original_filename = filename
+
+        verbose_(
+            f"Exporting {photo.original_filename} ({photo.filename}) as {original_filename}"
+        )
 
         dest_paths = get_dirnames_from_template(
             photo, directory, export_by_date, dest, dry_run
@@ -2104,137 +2750,242 @@ def export_photo(
 
         # if download_missing and the photo is missing or path doesn't exist,
         # try to download with Photos
-        use_photos_export = download_missing and (
-            photo.ismissing or not os.path.exists(photo.path)
+        use_photos_export = use_photos_export or (
+            download_missing
+            and (
+                photo.ismissing
+                or photo.path is None
+                or (export_edited and photo.path_edited is None)
+            )
         )
 
         # export the photo to each path in dest_paths
-        results_exported = []
-        results_new = []
-        results_updated = []
-        results_skipped = []
-        results_exif_updated = []
         for dest_path in dest_paths:
-            export_results = photo.export2(
-                dest_path,
-                filename,
-                sidecar_json=sidecar_json,
-                sidecar_xmp=sidecar_xmp,
-                live_photo=export_live,
-                raw_photo=export_raw,
-                export_as_hardlink=export_as_hardlink,
-                overwrite=overwrite,
-                use_photos_export=use_photos_export,
-                exiftool=exiftool,
-                no_xattr=no_extended_attributes,
-                use_albums_as_keywords=album_keyword,
-                use_persons_as_keywords=person_keyword,
-                keyword_template=keyword_template,
-                description_template=description_template,
-                update=update,
-                export_db=export_db,
-                fileutil=fileutil,
-                dry_run=dry_run,
-            )
+            # TODO: if --skip-original-if-edited, it's possible edited version is on disk but
+            # original is missing, in which case we should download the edited version
+            if export_original:
+                if missing_original:
+                    space = " " if not verbose else ""
+                    verbose_(f"{space}Skipping missing photo {photo.original_filename}")
+                    results_missing.append(
+                        str(pathlib.Path(dest_path) / original_filename)
+                    )
+                else:
+                    try:
+                        export_results = photo.export2(
+                            dest_path,
+                            original_filename,
+                            sidecar_json=sidecar_json,
+                            sidecar_xmp=sidecar_xmp,
+                            live_photo=export_live,
+                            raw_photo=export_raw,
+                            export_as_hardlink=export_as_hardlink,
+                            overwrite=overwrite,
+                            use_photos_export=use_photos_export,
+                            exiftool=exiftool,
+                            use_albums_as_keywords=album_keyword,
+                            use_persons_as_keywords=person_keyword,
+                            keyword_template=keyword_template,
+                            description_template=description_template,
+                            update=update,
+                            ignore_signature=ignore_signature,
+                            export_db=export_db,
+                            fileutil=fileutil,
+                            dry_run=dry_run,
+                            touch_file=touch_file,
+                            convert_to_jpeg=convert_to_jpeg,
+                            jpeg_quality=jpeg_quality,
+                            ignore_date_modified=ignore_date_modified,
+                            use_photokit=use_photokit,
+                            verbose=verbose_,
+                        )
 
-            results_exported.extend(export_results.exported)
-            results_new.extend(export_results.new)
-            results_updated.extend(export_results.updated)
-            results_skipped.extend(export_results.skipped)
-            results_exif_updated.extend(export_results.exif_updated)
+                        results_exported.extend(export_results.exported)
+                        results_new.extend(export_results.new)
+                        results_updated.extend(export_results.updated)
+                        results_skipped.extend(export_results.skipped)
+                        results_exif_updated.extend(export_results.exif_updated)
+                        results_touched.extend(export_results.touched)
+                        results_converted.extend(export_results.converted_to_jpeg)
+                        results_sidecar_json_written.extend(
+                            export_results.sidecar_json_written
+                        )
+                        results_sidecar_json_skipped.extend(
+                            export_results.sidecar_json_skipped
+                        )
+                        results_sidecar_xmp_written.extend(
+                            export_results.sidecar_xmp_written
+                        )
+                        results_sidecar_xmp_skipped.extend(
+                            export_results.sidecar_xmp_skipped
+                        )
 
-            if verbose_:
-                for exported in export_results.exported:
-                    verbose(f"Exported {exported}")
-                for new in export_results.new:
-                    verbose(f"Exported new file {new}")
-                for updated in export_results.updated:
-                    verbose(f"Exported updated file {updated}")
-                for skipped in export_results.skipped:
-                    verbose(f"Skipped up to date file {skipped}")
+                    except Exception:
+                        click.echo(
+                            f"Error exporting photo {photo.original_filename} ({photo.filename}) as {original_filename}",
+                            err=True,
+                        )
+                        results_error.extend(
+                            str(pathlib.Path(dest) / original_filename)
+                        )
+            else:
+                verbose_(f"Skipping original version of {photo.original_filename}")
 
             # if export-edited, also export the edited version
             # verify the photo has adjustments and valid path to avoid raising an exception
             if export_edited and photo.hasadjustments:
                 # if download_missing and the photo is missing or path doesn't exist,
                 # try to download with Photos
-                use_photos_export = download_missing and photo.path_edited is None
-                if not download_missing and photo.path_edited is None:
-                    verbose(f"Skipping missing edited photo for {filename}")
+
+                edited_filename = pathlib.Path(filename)
+                # check for correct edited suffix
+                if photo.path_edited is not None:
+                    edited_ext = pathlib.Path(photo.path_edited).suffix
                 else:
-                    edited_name = pathlib.Path(filename)
-                    # check for correct edited suffix
-                    if photo.path_edited is not None:
-                        edited_ext = pathlib.Path(photo.path_edited).suffix
-                    else:
-                        # use filename suffix which might be wrong,
-                        # will be corrected by use_photos_export
-                        edited_ext = pathlib.Path(photo.filename).suffix
-                    edited_name = f"{edited_name.stem}{edited_suffix}{edited_ext}"
-                    verbose(f"Exporting edited version of {filename} as {edited_name}")
-                    export_results_edited = photo.export2(
-                        dest_path,
-                        edited_name,
-                        sidecar_json=sidecar_json,
-                        sidecar_xmp=sidecar_xmp,
-                        export_as_hardlink=export_as_hardlink,
-                        overwrite=overwrite,
-                        edited=True,
-                        use_photos_export=use_photos_export,
-                        exiftool=exiftool,
-                        no_xattr=no_extended_attributes,
-                        use_albums_as_keywords=album_keyword,
-                        use_persons_as_keywords=person_keyword,
-                        keyword_template=keyword_template,
-                        description_template=description_template,
-                        update=update,
-                        export_db=export_db,
-                        fileutil=fileutil,
-                        dry_run=dry_run,
+                    # use filename suffix which might be wrong,
+                    # will be corrected by use_photos_export
+                    edited_ext = pathlib.Path(photo.filename).suffix
+
+                if edited_suffix:
+                    rendered_suffix, unmatched = photo.render_template(
+                        edited_suffix, filename=True
                     )
 
-                    results_exported.extend(export_results_edited.exported)
-                    results_new.extend(export_results_edited.new)
-                    results_updated.extend(export_results_edited.updated)
-                    results_skipped.extend(export_results_edited.skipped)
-                    results_exif_updated.extend(export_results_edited.exif_updated)
+                    if not rendered_suffix or unmatched:
+                        raise click.BadOptionUsage(
+                            "edited_suffix",
+                            f"Invalid template for --edited-suffix '{edited_suffix}': results={rendered_suffix} unmatched={unmatched}",
+                        )
+                    if len(rendered_suffix) > 1:
+                        raise click.BadOptionUsage(
+                            "edited_suffix",
+                            f"Invalid template for --edited-suffix: may not use multi-valued templates: '{edited_suffix}': results={rendered_suffix}",
+                        )
+                    rendered_suffix = rendered_suffix[0]
 
-                    if verbose_:
-                        for exported in export_results_edited.exported:
-                            verbose(f"Exported {exported}")
-                        for new in export_results_edited.new:
-                            verbose(f"Exported new file {new}")
-                        for updated in export_results_edited.updated:
-                            verbose(f"Exported updated file {updated}")
-                        for skipped in export_results_edited.skipped:
-                            verbose(f"Skipped up to date file {skipped}")
+                    edited_filename = (
+                        f"{edited_filename.stem}{rendered_suffix}{edited_ext}"
+                    )
+                else:
+                    edited_filename = f"{edited_filename.stem}{edited_ext}"
+
+                verbose_(
+                    f"Exporting edited version of {photo.original_filename} ({photo.filename}) as {edited_filename}"
+                )
+                if missing_edited:
+                    space = " " if not verbose else ""
+                    verbose_(f"{space}Skipping missing edited photo for {filename}")
+                    results_missing.append(
+                        str(pathlib.Path(dest_path) / edited_filename)
+                    )
+                else:
+                    try:
+                        export_results_edited = photo.export2(
+                            dest_path,
+                            edited_filename,
+                            sidecar_json=sidecar_json,
+                            sidecar_xmp=sidecar_xmp,
+                            export_as_hardlink=export_as_hardlink,
+                            overwrite=overwrite,
+                            edited=True,
+                            use_photos_export=use_photos_export,
+                            exiftool=exiftool,
+                            use_albums_as_keywords=album_keyword,
+                            use_persons_as_keywords=person_keyword,
+                            keyword_template=keyword_template,
+                            description_template=description_template,
+                            update=update,
+                            ignore_signature=ignore_signature,
+                            export_db=export_db,
+                            fileutil=fileutil,
+                            dry_run=dry_run,
+                            touch_file=touch_file,
+                            convert_to_jpeg=convert_to_jpeg,
+                            jpeg_quality=jpeg_quality,
+                            ignore_date_modified=ignore_date_modified,
+                            use_photokit=use_photokit,
+                            verbose=verbose_,
+                        )
+
+                        results_exported.extend(export_results_edited.exported)
+                        results_new.extend(export_results_edited.new)
+                        results_updated.extend(export_results_edited.updated)
+                        results_skipped.extend(export_results_edited.skipped)
+                        results_exif_updated.extend(export_results_edited.exif_updated)
+                        results_touched.extend(export_results_edited.touched)
+                        results_converted.extend(
+                            export_results_edited.converted_to_jpeg
+                        )
+                        results_sidecar_json_written.extend(
+                            export_results_edited.sidecar_json_written
+                        )
+                        results_sidecar_json_skipped.extend(
+                            export_results_edited.sidecar_json_skipped
+                        )
+                        results_sidecar_xmp_written.extend(
+                            export_results_edited.sidecar_xmp_written
+                        )
+                        results_sidecar_xmp_skipped.extend(
+                            export_results_edited.sidecar_xmp_skipped
+                        )
+
+                    except Exception:
+                        click.echo(
+                            f"Error exporting photo {filename} as {edited_filename}",
+                            err=True,
+                        )
+                        results_error.extend(str(pathlib.Path(dest) / edited_filename))
+
+            if verbose:
+                if update:
+                    for new in results_new:
+                        verbose_(f"Exported new file {new}")
+                    for updated in results_updated:
+                        verbose_(f"Exported updated file {updated}")
+                    for skipped in results_skipped:
+                        verbose_(f"Skipped up to date file {skipped}")
+                else:
+                    for exported in results_exported:
+                        verbose_(f"Exported {exported}")
+                for touched in results_touched:
+                    verbose_(f"Touched date on file {touched}")
 
     return ExportResults(
-        results_exported,
-        results_new,
-        results_updated,
-        results_skipped,
-        results_exif_updated,
+        exported=results_exported,
+        new=results_new,
+        updated=results_updated,
+        skipped=results_skipped,
+        exif_updated=results_exif_updated,
+        touched=results_touched,
+        converted_to_jpeg=results_converted,
+        sidecar_json_written=results_sidecar_json_written,
+        sidecar_json_skipped=results_sidecar_json_skipped,
+        sidecar_xmp_written=results_sidecar_xmp_written,
+        sidecar_xmp_skipped=results_sidecar_xmp_skipped,
+        missing=results_missing,
+        error=results_error,
     )
 
 
 def get_filenames_from_template(photo, filename_template, original_name):
-    """ get list of export filenames for a photo
+    """get list of export filenames for a photo
 
     Args:
         photo: a PhotoInfo instance
         filename_template: a PhotoTemplate template string, may be None
         original_name: boolean; if True, use photo's original filename instead of current filename
-    
+
     Returns:
         list of filenames
-    
+
     Raises:
         click.BadOptionUsage if template is invalid
     """
     if filename_template:
         photo_ext = pathlib.Path(photo.original_filename).suffix
-        filenames, unmatched = photo.render_template(filename_template, path_sep="_")
+        filenames, unmatched = photo.render_template(
+            filename_template, path_sep="_", filename=True
+        )
         if not filenames or unmatched:
             raise click.BadOptionUsage(
                 "filename_template",
@@ -2242,12 +2993,18 @@ def get_filenames_from_template(photo, filename_template, original_name):
             )
         filenames = [f"{file_}{photo_ext}" for file_ in filenames]
     else:
-        filenames = [photo.original_filename] if original_name else [photo.filename]
+        filenames = (
+            [photo.original_filename]
+            if (original_name and (photo.original_filename is not None))
+            else [photo.filename]
+        )
+
+    filenames = [sanitize_filename(filename) for filename in filenames]
     return filenames
 
 
 def get_dirnames_from_template(photo, directory, export_by_date, dest, dry_run):
-    """ get list of directories to export a photo into, creates directories if they don't exist
+    """get list of directories to export a photo into, creates directories if they don't exist
 
     Args:
         photo: a PhotoInstance object
@@ -2273,22 +3030,18 @@ def get_dirnames_from_template(photo, directory, export_by_date, dest, dry_run):
         dest_paths = [dest_path]
     elif directory:
         # got a directory template, render it and check results are valid
-        dirnames, unmatched = photo.render_template(directory)
-        if not dirnames:
+        dirnames, unmatched = photo.render_template(directory, dirname=True)
+        if not dirnames or unmatched:
             raise click.BadOptionUsage(
                 "directory",
                 f"Invalid template '{directory}': results={dirnames} unmatched={unmatched}",
             )
-        elif unmatched:
-            raise click.BadOptionUsage(
-                "directory",
-                f"Invalid template '{directory}': results={dirnames} unmatched={unmatched}",
-            )
+
         dest_paths = []
         for dirname in dirnames:
-            dirname = sanitize_filepath(dirname, platform="auto")
+            dirname = sanitize_filepath(dirname)
             dest_path = os.path.join(dest, dirname)
-            if not is_valid_filepath(dest_path, platform="auto"):
+            if not is_valid_filepath(dest_path):
                 raise ValueError(f"Invalid file path: '{dest_path}'")
             if not dry_run and not os.path.isdir(dest_path):
                 os.makedirs(dest_path)
@@ -2299,8 +3052,8 @@ def get_dirnames_from_template(photo, directory, export_by_date, dest, dry_run):
 
 
 def find_files_in_branch(pathname, filename):
-    """ Search a directory branch to find file(s) named filename
-        The branch searched includes all folders below pathname and 
+    """Search a directory branch to find file(s) named filename
+        The branch searched includes all folders below pathname and
         the parent tree of pathname but not pathname itself.
 
         e.g. find filename in children folders and parent folders
@@ -2308,7 +3061,7 @@ def find_files_in_branch(pathname, filename):
     Args:
         pathname: str, full path of directory to search
         filename: str, filename to search for
-    
+
     Returns: list of full paths to any matching files
     """
 
@@ -2316,7 +3069,7 @@ def find_files_in_branch(pathname, filename):
     files = []
 
     # walk down the tree
-    for root, directories, filenames in os.walk(pathname):
+    for root, _, filenames in os.walk(pathname):
         # for directory in directories:
         # print(os.path.join(root, directory))
         for fname in filenames:
@@ -2333,6 +3086,188 @@ def find_files_in_branch(pathname, filename):
                 files.append(os.path.join(root, fname))
 
     return files
+
+
+def load_uuid_from_file(filename):
+    """Load UUIDs from file.  Does not validate UUIDs.
+        Format is 1 UUID per line, any line beginning with # is ignored.
+        Whitespace is stripped.
+
+    Arguments:
+        filename: file name of the file containing UUIDs
+
+    Returns:
+        list of UUIDs or empty list of no UUIDs in file
+
+    Raises:
+        FileNotFoundError if file does not exist
+    """
+
+    if not pathlib.Path(filename).is_file():
+        raise FileNotFoundError(f"Could not find file {filename}")
+
+    uuid = []
+    with open(filename, "r") as uuid_file:
+        for line in uuid_file:
+            line = line.strip()
+            if len(line) and line[0] != "#":
+                uuid.append(line)
+    return uuid
+
+
+def write_export_report(
+    report_file,
+    results_exported,
+    results_new,
+    results_updated,
+    results_skipped,
+    results_exif_updated,
+    results_touched,
+    results_converted,
+    results_sidecar_json_written,
+    results_sidecar_json_skipped,
+    results_sidecar_xmp_written,
+    results_sidecar_xmp_skipped,
+    results_missing,
+    results_error,
+):
+
+    """ write CSV report with results from export """
+
+    # Collect results for reporting
+    # TODO: pull this in a separate write_report function
+    all_results = {
+        result: {
+            "filename": result,
+            "exported": 0,
+            "new": 0,
+            "updated": 0,
+            "skipped": 0,
+            "exif_updated": 0,
+            "touched": 0,
+            "converted_to_jpeg": 0,
+            "sidecar_xmp": 0,
+            "sidecar_json": 0,
+            "missing": 0,
+            "error": 0,
+        }
+        for result in results_exported
+        + results_new
+        + results_updated
+        + results_skipped
+        + results_exif_updated
+        + results_touched
+        + results_converted
+        + results_sidecar_json_written
+        + results_sidecar_json_skipped
+        + results_sidecar_xmp_written
+        + results_sidecar_xmp_skipped
+        + results_missing
+        + results_error
+    }
+
+    for result in results_exported:
+        all_results[result]["exported"] = 1
+
+    for result in results_new:
+        all_results[result]["new"] = 1
+
+    for result in results_updated:
+        all_results[result]["updated"] = 1
+
+    for result in results_skipped:
+        all_results[result]["skipped"] = 1
+
+    for result in results_exif_updated:
+        all_results[result]["exif_updated"] = 1
+
+    for result in results_touched:
+        all_results[result]["touched"] = 1
+
+    for result in results_converted:
+        all_results[result]["converted_to_jpeg"] = 1
+
+    for result in results_sidecar_xmp_written:
+        all_results[result]["sidecar_xmp"] = 1
+        all_results[result]["exported"] = 1
+
+    for result in results_sidecar_xmp_skipped:
+        all_results[result]["sidecar_xmp"] = 1
+        all_results[result]["skipped"] = 1
+
+    for result in results_sidecar_json_written:
+        all_results[result]["sidecar_json"] = 1
+        all_results[result]["exported"] = 1
+
+    for result in results_sidecar_json_skipped:
+        all_results[result]["sidecar_json"] = 1
+        all_results[result]["skipped"] = 1
+
+    for result in results_missing:
+        all_results[result]["missing"] = 1
+
+    for result in results_error:
+        all_results[result]["error"] = 1
+
+    report_columns = [
+        "filename",
+        "exported",
+        "new",
+        "updated",
+        "skipped",
+        "exif_updated",
+        "touched",
+        "converted_to_jpeg",
+        "sidecar_xmp",
+        "sidecar_json",
+        "missing",
+        "error",
+    ]
+
+    try:
+        with open(report_file, "w") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=report_columns)
+            writer.writeheader()
+            for data in [result for result in all_results.values()]:
+                writer.writerow(data)
+    except IOError:
+        click.echo("Could not open output file for writing", err=True)
+        raise click.Abort()
+
+
+def cleanup_files(dest_path, files_to_keep, fileutil):
+    """ cleanup dest_path by deleting and files and empty directories 
+        not in files_to_keep
+
+    Args:
+        dest_path: path to directory to clean
+        files_to_keep: list of full file paths to keep (not delete)
+        fileutile: FileUtil object
+
+    Returns:
+        tuple of (number of files deleted, number of directories deleted)
+    """
+    keepers = {filename.lower(): 1 for filename in files_to_keep}
+
+    deleted_files = 0
+    for p in pathlib.Path(dest_path).rglob("*"):
+        path = str(p).lower()
+        if p.is_file() and path not in keepers:
+            verbose_(f"Deleting {p}")
+            fileutil.unlink(p)
+            deleted_files += 1
+
+    # delete empty directories
+    deleted_dirs = 0
+    for p in pathlib.Path(dest_path).rglob("*"):
+        path = str(p).lower()
+        # if directory and directory is empty
+        if p.is_dir() and not next(p.iterdir(), False):
+            verbose_(f"Deleting empty directory {p}")
+            fileutil.rmdir(p)
+            deleted_dirs += 1
+
+    return (deleted_files, deleted_dirs)
 
 
 if __name__ == "__main__":

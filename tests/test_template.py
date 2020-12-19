@@ -1,12 +1,20 @@
 """ Test template.py """
 import pytest
 
+from osxphotos.exiftool import get_exiftool_path
+
+try:
+    exiftool = get_exiftool_path()
+except:
+    exiftool = None
+
 PHOTOS_DB_PLACES = (
-    "./tests/Test-Places-Catalina-10_15_1.photoslibrary/database/photos.db"
+    "./tests/Test-Places-Catalina-10_15_7.photoslibrary/database/photos.db"
 )
-PHOTOS_DB_15_1 = "./tests/Test-10.15.1.photoslibrary/database/photos.db"
-PHOTOS_DB_15_4 = "./tests/Test-10.15.4.photoslibrary/database/photos.db"
+PHOTOS_DB_15_7 = "./tests/Test-10.15.7.photoslibrary/database/photos.db"
 PHOTOS_DB_14_6 = "./tests/Test-10.14.6.photoslibrary/database/photos.db"
+PHOTOS_DB_COMMENTS = "tests/Test-Cloud-10.15.6.photoslibrary"
+PHOTOS_DB_CLOUD = "./tests/Test-Cloud-10.15.6.photoslibrary/database/photos.db"
 
 UUID_DICT = {
     "place_dc": "128FB4C6-0B16-4E7D-9108-FB2E90DA1546",
@@ -16,6 +24,73 @@ UUID_DICT = {
     "folder_album_1": "3DD2C897-F19E-4CA6-8C22-B027D5A71907",
     "folder_album_no_folder": "D79B8D77-BFFC-460B-9312-034F2877D35B",
     "mojave_album_1": "15uNd7%8RguTEgNPKHfTWw",
+    "date_modified": "A9B73E13-A6F2-4915-8D67-7213B39BAE9F",
+    "date_not_modified": "128FB4C6-0B16-4E7D-9108-FB2E90DA1546",
+}
+
+UUID_MEDIA_TYPE = {
+    "photo": "C2BBC7A4-5333-46EE-BAF0-093E72111B39",
+    "video": "45099D34-A414-464F-94A2-60D6823679C8",
+    "selfie": "080525C4-1F05-48E5-A3F4-0C53127BB39C",
+    "time_lapse": "4614086E-C797-4876-B3B9-3057E8D757C9",
+    "panorama": "1C1C8F1F-826B-4A24-B1CB-56628946A834",
+    "slow_mo": None,
+    "screenshot": None,
+    "portrait": "7CDA5F84-AA16-4D28-9AA6-A49E1DF8A332",
+    "live_photo": "51F2BEF7-431A-4D31-8AC1-3284A57826AE",
+    "burst": None,
+}
+
+# multi keywords
+UUID_MULTI_KEYWORDS = "6191423D-8DB8-4D4C-92BE-9BBBA308AAC4"
+TEMPLATE_VALUES_MULTI_KEYWORDS = {
+    "{keyword}": ["flowers", "wedding"],
+    "{+keyword}": ["flowerswedding"],
+    "{;+keyword}": ["flowers;wedding"],
+    "{; +keyword}": ["flowers; wedding"],
+}
+
+UUID_TITLE = "6191423D-8DB8-4D4C-92BE-9BBBA308AAC4"
+TEMPLATE_VALUES_TITLE = {
+    "{title}": ["Tulips tied together at a flower shop"],
+    "{+title}": ["Tulips tied together at a flower shop"],
+    "{,+title}": ["Tulips tied together at a flower shop"],
+    "{, +title}": ["Tulips tied together at a flower shop"],
+}
+
+# Boolean type values that render to True
+UUID_BOOL_VALUES = {
+    "hdr": "D11D25FF-5F31-47D2-ABA9-58418878DC15",
+    "edited": "51F2BEF7-431A-4D31-8AC1-3284A57826AE",
+}
+
+# Boolean type values that render to False
+UUID_BOOL_VALUES_NOT = {
+    "hdr": "51F2BEF7-431A-4D31-8AC1-3284A57826AE",
+    "edited": "CCBE0EB9-AE9F-4479-BFFD-107042C75227",
+}
+
+# for exiftool template
+UUID_EXIFTOOL = {
+    "A92D9C26-3A50-4197-9388-CB5F7DB9FA91": {
+        "{exiftool:EXIF:Make}": ["Canon"],
+        "{exiftool:EXIF:Model}": ["Canon PowerShot G10"],
+        "{exiftool:EXIF:Make}/{exiftool:EXIF:Model}": ["Canon/Canon PowerShot G10"],
+        "{exiftool:IPTC:Keywords,foo}": ["foo"],
+    },
+    "DC99FBDD-7A52-4100-A5BB-344131646C30": {
+        "{exiftool:IPTC:Keywords}": [
+            "England",
+            "London",
+            "London 2018",
+            "St. James's Park",
+            "UK",
+            "United Kingdom",
+        ],
+        "{,+exiftool:IPTC:Keywords}": [
+            "England,London,London 2018,St. James's Park,UK,United Kingdom"
+        ],
+    },
 }
 
 TEMPLATE_VALUES = {
@@ -35,17 +110,6 @@ TEMPLATE_VALUES = {
     "{created.hour}": "19",
     "{created.min}": "07",
     "{created.sec}": "38",
-    "{modified.date}": "2020-03-21",
-    "{modified.year}": "2020",
-    "{modified.yy}": "20",
-    "{modified.mm}": "03",
-    "{modified.month}": "March",
-    "{modified.mon}": "Mar",
-    "{modified.dd}": "21",
-    "{modified.doy}": "081",
-    "{modified.hour}": "01",
-    "{modified.min}": "33",
-    "{modified.sec}": "08",
     "{place.name}": "Washington, District of Columbia, United States",
     "{place.country_code}": "US",
     "{place.name.country}": "United States",
@@ -76,14 +140,6 @@ TEMPLATE_VALUES_DEU = {
     "{created.dd}": "04",
     "{created.doy}": "035",
     "{created.dow}": "Dienstag",
-    "{modified.date}": "2020-03-21",
-    "{modified.year}": "2020",
-    "{modified.yy}": "20",
-    "{modified.mm}": "03",
-    "{modified.month}": "März",
-    "{modified.mon}": "Mär",
-    "{modified.dd}": "21",
-    "{modified.doy}": "081",
     "{place.name}": "Washington, District of Columbia, United States",
     "{place.country_code}": "US",
     "{place.name.country}": "United States",
@@ -97,6 +153,44 @@ TEMPLATE_VALUES_DEU = {
     "{place.address.postal_code}": "20009",
     "{place.address.country}": "United States",
     "{place.address.country_code}": "US",
+}
+
+TEMPLATE_VALUES_DATE_MODIFIED = {
+    "{name}": "A9B73E13-A6F2-4915-8D67-7213B39BAE9F",
+    "{original_name}": "IMG_3984",
+    "{modified.date}": "2020-10-31",
+    "{modified.year}": "2020",
+    "{modified.yy}": "20",
+    "{modified.mm}": "10",
+    "{modified.month}": "October",
+    "{modified.mon}": "Oct",
+    "{modified.dd}": "31",
+    "{modified.doy}": "305",
+    "{modified.dow}": "Saturday",
+}
+
+TEMPLATE_VALUES_DATE_NOT_MODIFIED = {
+    "{name}": "128FB4C6-0B16-4E7D-9108-FB2E90DA1546",
+    "{original_name}": "IMG_1064",
+    "{modified.date}": "_",
+    "{modified.year}": "_",
+    "{modified.yy}": "_",
+    "{modified.mm}": "_",
+    "{modified.month}": "_",
+    "{modified.mon}": "_",
+    "{modified.dd}": "_",
+    "{modified.doy}": "_",
+    "{modified.dow}": "_",
+}
+
+
+COMMENT_UUID_DICT = {
+    "4AD7C8EF-2991-4519-9D3A-7F44A6F031BE": [
+        "None: Nice photo!",
+        "None: Wish I was back here!",
+    ],
+    "CCBE0EB9-AE9F-4479-BFFD-107042C75227": ["_"],
+    "4E4944A0-3E5C-4028-9600-A8709F2FA1DB": ["None: Nice trophy"],
 }
 
 
@@ -149,6 +243,34 @@ def test_subst():
     for template in TEMPLATE_VALUES:
         rendered, _ = photo.render_template(template)
         assert rendered[0] == TEMPLATE_VALUES[template]
+
+
+def test_subst_date_modified():
+    """ Test that substitutions are correct for date modified """
+    import locale
+    import osxphotos
+
+    locale.setlocale(locale.LC_ALL, "en_US")
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_PLACES)
+    photo = photosdb.photos(uuid=[UUID_DICT["date_modified"]])[0]
+
+    for template in TEMPLATE_VALUES_DATE_MODIFIED:
+        rendered, _ = photo.render_template(template)
+        assert rendered[0] == TEMPLATE_VALUES_DATE_MODIFIED[template]
+
+
+def test_subst_date_not_modified():
+    """ Test that substitutions are correct for date modified when photo isn't modified """
+    import locale
+    import osxphotos
+
+    locale.setlocale(locale.LC_ALL, "en_US")
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_PLACES)
+    photo = photosdb.photos(uuid=[UUID_DICT["date_not_modified"]])[0]
+
+    for template in TEMPLATE_VALUES_DATE_NOT_MODIFIED:
+        rendered, _ = photo.render_template(template)
+        assert rendered[0] == TEMPLATE_VALUES_DATE_NOT_MODIFIED[template]
 
 
 def test_subst_locale_1():
@@ -216,7 +338,7 @@ def test_subst_default_val_2():
 
     template = "{place.name.area_of_interest,}"
     rendered, _ = photo.render_template(template)
-    assert rendered[0] == "_"
+    assert rendered[0] == ""
 
 
 def test_subst_unknown_val():
@@ -232,10 +354,6 @@ def test_subst_unknown_val():
     rendered, unknown = photo.render_template(template)
     assert rendered[0] == "2020/{foo}"
     assert unknown == ["foo"]
-
-    template = "{place.name.area_of_interest,}"
-    rendered, _ = photo.render_template(template)
-    assert rendered[0] == "_"
 
 
 def test_subst_double_brace():
@@ -271,7 +389,7 @@ def test_subst_multi_1_1_2():
     # one album, one keyword, two persons
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     photo = photosdb.photos(uuid=[UUID_DICT["1_1_2"]])[0]
 
     template = "{created.year}/{album}/{keyword}/{person}"
@@ -285,16 +403,12 @@ def test_subst_multi_2_1_1():
     # 2 albums, 1 keyword, 1 person
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["2_1_1"]])[0]
 
     template = "{created.year}/{album}/{keyword}/{person}"
-    expected = [
-        "2018/Pumpkin Farm/Kids/Katie",
-        "2018/Test Album/Kids/Katie",
-        "2018/Multi Keyword/Kids/Katie",
-    ]
+    expected = ["2018/Pumpkin Farm/Kids/Katie", "2018/Test Album/Kids/Katie"]
     rendered, _ = photo.render_template(template)
     assert sorted(rendered) == sorted(expected)
 
@@ -304,7 +418,7 @@ def test_subst_multi_2_1_1_single():
     # 2 albums, 1 keyword, 1 person but only do keywords
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["2_1_1"]])[0]
 
@@ -319,7 +433,7 @@ def test_subst_multi_0_2_0():
     # 0 albums, 2 keywords, 0 persons
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["0_2_0"]])[0]
 
@@ -334,7 +448,7 @@ def test_subst_multi_0_2_0_single():
     # 0 albums, 2 keywords, 0 persons, but only do albums
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["0_2_0"]])[0]
 
@@ -349,7 +463,7 @@ def test_subst_multi_0_2_0_default_val():
     # 0 albums, 2 keywords, 0 persons, default vals provided
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["0_2_0"]])[0]
 
@@ -364,7 +478,7 @@ def test_subst_multi_0_2_0_default_val_unknown_val():
     # 0 albums, 2 keywords, 0 persons, default vals provided, unknown val in template
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["0_2_0"]])[0]
 
@@ -385,7 +499,7 @@ def test_subst_multi_0_2_0_default_val_unknown_val_2():
     # 0 albums, 2 keywords, 0 persons, default vals provided, unknown val in template
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["0_2_0"]])[0]
 
@@ -403,12 +517,35 @@ def test_subst_multi_folder_albums_1():
     """ Test substitutions for folder_album are correct """
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_4)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
 
     # photo in an album in a folder
     photo = photosdb.photos(uuid=[UUID_DICT["folder_album_1"]])[0]
     template = "{folder_album}"
-    expected = ["Folder1/SubFolder2/AlbumInFolder"]
+    expected = [
+        "2018-10 - Sponsion, Museum, Frühstück, Römermuseum",
+        "2019-10/11 Paris Clermont",
+        "Folder1/SubFolder2/AlbumInFolder",
+    ]
+    rendered, unknown = photo.render_template(template)
+    assert sorted(rendered) == sorted(expected)
+    assert unknown == []
+
+
+def test_subst_multi_folder_albums_1_path_sep():
+    """ Test substitutions for folder_album are correct with custom PATH_SEP """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
+
+    # photo in an album in a folder
+    photo = photosdb.photos(uuid=[UUID_DICT["folder_album_1"]])[0]
+    template = "{folder_album(:)}"
+    expected = [
+        "2018-10 - Sponsion, Museum, Frühstück, Römermuseum",
+        "2019-10/11 Paris Clermont",
+        "Folder1:SubFolder2:AlbumInFolder",
+    ]
     rendered, unknown = photo.render_template(template)
     assert sorted(rendered) == sorted(expected)
     assert unknown == []
@@ -418,11 +555,26 @@ def test_subst_multi_folder_albums_2():
     """ Test substitutions for folder_album are correct """
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_4)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
 
     # photo in an album in a folder
     photo = photosdb.photos(uuid=[UUID_DICT["folder_album_no_folder"]])[0]
     template = "{folder_album}"
+    expected = ["Pumpkin Farm", "Test Album"]
+    rendered, unknown = photo.render_template(template)
+    assert sorted(rendered) == sorted(expected)
+    assert unknown == []
+
+
+def test_subst_multi_folder_albums_2_path_sep():
+    """ Test substitutions for folder_album are correct with custom PATH_SEP """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
+
+    # photo in an album in a folder
+    photo = photosdb.photos(uuid=[UUID_DICT["folder_album_no_folder"]])[0]
+    template = "{folder_album(:)}"
     expected = ["Pumpkin Farm", "Test Album"]
     rendered, unknown = photo.render_template(template)
     assert sorted(rendered) == sorted(expected)
@@ -439,6 +591,21 @@ def test_subst_multi_folder_albums_3():
     photo = photosdb.photos(uuid=[UUID_DICT["mojave_album_1"]])[0]
     template = "{folder_album}"
     expected = ["Folder1/SubFolder2/AlbumInFolder", "Pumpkin Farm", "Test Album (1)"]
+    rendered, unknown = photo.render_template(template)
+    assert sorted(rendered) == sorted(expected)
+    assert unknown == []
+
+
+def test_subst_multi_folder_albums_3_path_sep():
+    """ Test substitutions for folder_album on < Photos 5 with custom PATH_SEP """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_14_6)
+
+    # photo in an album in a folder
+    photo = photosdb.photos(uuid=[UUID_DICT["mojave_album_1"]])[0]
+    template = "{folder_album(:)}"
+    expected = ["Folder1:SubFolder2:AlbumInFolder", "Pumpkin Farm", "Test Album (1)"]
     rendered, unknown = photo.render_template(template)
     assert sorted(rendered) == sorted(expected)
     assert unknown == []
@@ -464,7 +631,7 @@ def test_subst_expand_inplace_1():
     """ Test that substitutions are correct when expand_inplace=True """
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["1_1_2"]])[0]
 
@@ -478,7 +645,7 @@ def test_subst_expand_inplace_2():
     """ Test that substitutions are correct when expand_inplace=True """
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["1_1_2"]])[0]
 
@@ -492,7 +659,7 @@ def test_subst_expand_inplace_3():
     """ Test that substitutions are correct when expand_inplace=True and inplace_sep specified"""
     import osxphotos
 
-    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_1)
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
     # one album, one keyword, two persons
     photo = photosdb.photos(uuid=[UUID_DICT["1_1_2"]])[0]
 
@@ -503,3 +670,118 @@ def test_subst_expand_inplace_3():
     )
     assert sorted(rendered) == sorted(expected)
 
+
+def test_comment():
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_COMMENTS)
+    for uuid in COMMENT_UUID_DICT:
+        photo = photosdb.get_photo(uuid)
+        comments = photo.render_template("{comment}")
+        assert comments[0] == COMMENT_UUID_DICT[uuid]
+
+
+def test_media_type():
+    """ test {media_type} template """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(PHOTOS_DB_CLOUD)
+
+    for field, uuid in UUID_MEDIA_TYPE.items():
+        if uuid is not None:
+            photo = photosdb.get_photo(uuid)
+            rendered, _ = photo.render_template("{media_type}")
+            assert rendered[0] == osxphotos.phototemplate.MEDIA_TYPE_DEFAULTS[field]
+
+
+def test_media_type_default():
+    """ test {media_type,photo=foo} template style """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(PHOTOS_DB_CLOUD)
+
+    for field, uuid in UUID_MEDIA_TYPE.items():
+        if uuid is not None:
+            photo = photosdb.get_photo(uuid)
+            rendered, _ = photo.render_template("{media_type," + f"{field}" + "=foo}")
+            assert rendered[0] == "foo"
+
+
+def test_bool_values():
+    """ test {bool?TRUE,FALSE} template values """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(PHOTOS_DB_CLOUD)
+
+    for field, uuid in UUID_BOOL_VALUES.items():
+        if uuid is not None:
+            photo = photosdb.get_photo(uuid)
+            rendered, _ = photo.render_template("{" + f"{field}" + "?True,False}")
+            assert rendered[0] == "True"
+
+
+def test_bool_values_not():
+    """ test {bool?TRUE,FALSE} template values for FALSE values """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(PHOTOS_DB_CLOUD)
+
+    for field, uuid in UUID_BOOL_VALUES_NOT.items():
+        if uuid is not None:
+            photo = photosdb.get_photo(uuid)
+            rendered, _ = photo.render_template("{" + f"{field}" + "?True,False}")
+            assert rendered[0] == "False"
+
+
+def test_partial_match():
+    """ test that template successfully rejects a field that is superset of valid field """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(PHOTOS_DB_CLOUD)
+
+    for uuid in COMMENT_UUID_DICT:
+        photo = photosdb.get_photo(uuid)
+        rendered, notmatched = photo.render_template("{keywords}")
+        assert [rendered, notmatched] == [["{keywords}"], ["keywords"]]
+        rendered, notmatched = photo.render_template("{keywords,}")
+        assert [rendered, notmatched] == [["{keywords,}"], ["keywords"]]
+        rendered, notmatched = photo.render_template("{keywords,foo}")
+        assert [rendered, notmatched] == [["{keywords,foo}"], ["keywords"]]
+        rendered, notmatched = photo.render_template("{,+keywords,foo}")
+        assert [rendered, notmatched] == [["{,+keywords,foo}"], ["keywords"]]
+
+
+def test_expand_in_place_with_delim():
+    """ Test that substitutions are correct when {DELIM+FIELD} format used """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
+    photo = photosdb.get_photo(UUID_MULTI_KEYWORDS)
+
+    for template in TEMPLATE_VALUES_MULTI_KEYWORDS:
+        rendered, _ = photo.render_template(template)
+        assert sorted(rendered) == sorted(TEMPLATE_VALUES_MULTI_KEYWORDS[template])
+
+
+def test_expand_in_place_with_delim_single_value():
+    """ Test that single-value substitutions are correct when {DELIM+FIELD} format used """
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
+    photo = photosdb.get_photo(UUID_TITLE)
+
+    for template in TEMPLATE_VALUES_TITLE:
+        rendered, _ = photo.render_template(template)
+        assert sorted(rendered) == sorted(TEMPLATE_VALUES_TITLE[template])
+
+
+@pytest.mark.skipif(exiftool is None, reason="exiftool not installed")
+def test_exiftool_template():
+    import osxphotos
+
+    photosdb = osxphotos.PhotosDB(dbfile=PHOTOS_DB_15_7)
+    for uuid in UUID_EXIFTOOL:
+        photo = photosdb.get_photo(uuid)
+        for template in UUID_EXIFTOOL[uuid]:
+            rendered, _ = photo.render_template(template)
+            assert sorted(rendered) == sorted(UUID_EXIFTOOL[uuid][template])

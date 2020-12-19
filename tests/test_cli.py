@@ -1,18 +1,27 @@
+""" Test the command line interface (CLI) """
+
 import os
 
 import pytest
 from click.testing import CliRunner
 
+import osxphotos
 from osxphotos.exiftool import get_exiftool_path
 
 CLI_PHOTOS_DB = "tests/Test-10.15.1.photoslibrary"
 LIVE_PHOTOS_DB = "tests/Test-Cloud-10.15.1.photoslibrary"
 RAW_PHOTOS_DB = "tests/Test-RAW-10.15.1.photoslibrary"
+COMMENTS_PHOTOS_DB = "tests/Test-Cloud-10.15.6.photoslibrary"
 PLACES_PHOTOS_DB = "tests/Test-Places-Catalina-10_15_1.photoslibrary"
 PLACES_PHOTOS_DB_13 = "tests/Test-Places-High-Sierra-10.13.6.photoslibrary"
 PHOTOS_DB_15_4 = "tests/Test-10.15.4.photoslibrary"
 PHOTOS_DB_15_5 = "tests/Test-10.15.5.photoslibrary"
+PHOTOS_DB_15_6 = "tests/Test-10.15.6.photoslibrary"
+PHOTOS_DB_15_7 = "tests/Test-10.15.7.photoslibrary"
+PHOTOS_DB_TOUCH = PHOTOS_DB_15_6
 PHOTOS_DB_14_6 = "tests/Test-10.14.6.photoslibrary"
+
+UUID_FILE = "tests/uuid_from_file.txt"
 
 CLI_OUTPUT_NO_SUBCOMMAND = [
     "Options:",
@@ -50,11 +59,18 @@ CLI_EXPORT_FILENAMES = [
     "wedding_edited.jpeg",
 ]
 
+CLI_EXPORT_IGNORE_SIGNATURE_FILENAMES = ["Tulips.jpg", "wedding.jpg"]
+
 CLI_EXPORT_FILENAMES_ALBUM = ["Pumkins1.jpg", "Pumkins2.jpg", "Pumpkins3.jpg"]
+
+CLI_EXPORT_FILENAMES_ALBUM_UNICODE = ["IMG_4547.jpg"]
 
 CLI_EXPORT_FILENAMES_DELETED_TWIN = ["wedding.jpg", "wedding_edited.jpeg"]
 
 CLI_EXPORT_EDITED_SUFFIX = "_bearbeiten"
+CLI_EXPORT_EDITED_SUFFIX_TEMPLATE = "{edited?_edited,}"
+CLI_EXPORT_ORIGINAL_SUFFIX = "_original"
+CLI_EXPORT_ORIGINAL_SUFFIX_TEMPLATE = "{edited?_original,}"
 
 CLI_EXPORT_FILENAMES_EDITED_SUFFIX = [
     "Pumkins1.jpg",
@@ -67,6 +83,38 @@ CLI_EXPORT_FILENAMES_EDITED_SUFFIX = [
     "wedding_bearbeiten.jpeg",
 ]
 
+CLI_EXPORT_FILENAMES_EDITED_SUFFIX_TEMPLATE = [
+    "Pumkins1.jpg",
+    "Pumkins2.jpg",
+    "Pumpkins3.jpg",
+    "St James Park.jpg",
+    "St James Park_edited.jpeg",
+    "Tulips.jpg",
+    "wedding.jpg",
+    "wedding_edited.jpeg",
+]
+
+CLI_EXPORT_FILENAMES_ORIGINAL_SUFFIX = [
+    "Pumkins1_original.jpg",
+    "Pumkins2_original.jpg",
+    "Pumpkins3_original.jpg",
+    "St James Park_original.jpg",
+    "St James Park_edited.jpeg",
+    "Tulips_original.jpg",
+    "wedding_original.jpg",
+    "wedding_edited.jpeg",
+]
+
+CLI_EXPORT_FILENAMES_ORIGINAL_SUFFIX_TEMPLATE = [
+    "Pumkins1.jpg",
+    "Pumkins2.jpg",
+    "Pumpkins3.jpg",
+    "St James Park_original.jpg",
+    "St James Park_edited.jpeg",
+    "Tulips.jpg",
+    "wedding_original.jpg",
+    "wedding_edited.jpeg",
+]
 
 CLI_EXPORT_FILENAMES_CURRENT = [
     "1EB2B765-0765-43BA-A90C-0D0580E6172C.jpeg",
@@ -85,6 +133,47 @@ CLI_EXPORT_FILENAMES_CURRENT = [
     "F12384F6-CD17-4151-ACBA-AE0E3688539E.jpeg",
 ]
 
+CLI_EXPORT_FILENAMES_CONVERT_TO_JPEG = [
+    "DSC03584.jpeg",
+    "IMG_1693.jpeg",
+    "IMG_1994.JPG",
+    "IMG_1994.cr2",
+    "IMG_1997.JPG",
+    "IMG_1997.cr2",
+    "IMG_3092.jpeg",
+    "IMG_3092_edited.jpeg",
+    "IMG_4547.jpg",
+    "Pumkins1.jpg",
+    "Pumkins2.jpg",
+    "Pumpkins3.jpg",
+    "St James Park.jpg",
+    "St James Park_edited.jpeg",
+    "Tulips.jpg",
+    "Tulips_edited.jpeg",
+    "wedding.jpg",
+    "wedding_edited.jpeg",
+]
+
+CLI_EXPORT_FILENAMES_CONVERT_TO_JPEG_SKIP_RAW = [
+    "DSC03584.jpeg",
+    "IMG_1693.jpeg",
+    "IMG_1994.JPG",
+    "IMG_1997.JPG",
+    "IMG_3092.jpeg",
+    "IMG_3092_edited.jpeg",
+    "IMG_4547.jpg",
+    "Pumkins1.jpg",
+    "Pumkins2.jpg",
+    "Pumpkins3.jpg",
+    "St James Park.jpg",
+    "St James Park_edited.jpeg",
+    "Tulips.jpg",
+    "Tulips_edited.jpeg",
+    "wedding.jpg",
+    "wedding_edited.jpeg",
+]
+
+CLI_EXPORT_CONVERT_TO_JPEG_LARGE_FILE = "DSC03584.jpeg"
 
 CLI_EXPORTED_DIRECTORY_TEMPLATE_FILENAMES1 = [
     "2019/April/wedding.jpg",
@@ -174,13 +263,49 @@ CLI_EXPORTED_FILENAME_TEMPLATE_FILENAMES2 = [
     "I have a deleted twin-wedding_edited.jpeg",
 ]
 
+CLI_EXPORTED_FILENAME_TEMPLATE_FILENAMES_PATHSEP = [
+    "2018-10 - Sponsion, Museum, Frühstück, Römermuseum/IMG_4547.jpg",
+    "Folder1/SubFolder2/AlbumInFolder/IMG_4547.jpg",
+    "2019-10:11 Paris Clermont/IMG_4547.jpg",
+]
+
+
+CLI_EXPORTED_FILENAME_TEMPLATE_FILENAMES_KEYWORD_PATHSEP = [
+    "foo:bar/foo:bar_IMG_3092.heic"
+]
+
+CLI_EXPORTED_FILENAME_TEMPLATE_LONG_DESCRIPTION = [
+    "Lorem ipsum dolor sit amet, consectetuer adipiscing elit. "
+    "Aenean commodo ligula eget dolor. Aenean massa. "
+    "Cum sociis natoque penatibus et magnis dis parturient montes, "
+    "nascetur ridiculus mus. Donec quam felis, ultricies nec, "
+    "pellentesque eu, pretium q.tif"
+]
+
 CLI_EXPORT_UUID = "D79B8D77-BFFC-460B-9312-034F2877D35B"
+CLI_EXPORT_UUID_STATUE = "3DD2C897-F19E-4CA6-8C22-B027D5A71907"
+CLI_EXPORT_UUID_KEYWORD_PATHSEP = "7783E8E6-9CAC-40F3-BE22-81FB7051C266"
+CLI_EXPORT_UUID_LONG_DESCRIPTION = "8846E3E6-8AC8-4857-8448-E3D025784410"
 
 CLI_EXPORT_UUID_FILENAME = "Pumkins2.jpg"
 
+CLI_EXPORT_BY_DATE_TOUCH_UUID = [
+    "1EB2B765-0765-43BA-A90C-0D0580E6172C",  # Pumpkins3.jpg
+    "F12384F6-CD17-4151-ACBA-AE0E3688539E",  # Pumkins1.jpg
+]
+CLI_EXPORT_BY_DATE_TOUCH_TIMES = [1538165373, 1538163349]
+CLI_EXPORT_BY_DATE_NEED_TOUCH = [
+    "2018/09/28/Pumkins2.jpg",
+    "2018/10/13/St James Park.jpg",
+]
+CLI_EXPORT_BY_DATE_NEED_TOUCH_UUID = [
+    "D79B8D77-BFFC-460B-9312-034F2877D35B",
+    "DC99FBDD-7A52-4100-A5BB-344131646C30",
+]
+CLI_EXPORT_BY_DATE_NEED_TOUCH_TIMES = [1538165227, 1539436692]
 CLI_EXPORT_BY_DATE = ["2018/09/28/Pumpkins3.jpg", "2018/09/28/Pumkins1.jpg"]
 
-CLI_EXPORT_SIDECAR_FILENAMES = ["Pumkins2.jpg", "Pumkins2.json", "Pumkins2.xmp"]
+CLI_EXPORT_SIDECAR_FILENAMES = ["Pumkins2.jpg", "Pumkins2.jpg.json", "Pumkins2.jpg.xmp"]
 
 CLI_EXPORT_LIVE = [
     "51F2BEF7-431A-4D31-8AC1-3284A57826AE.jpeg",
@@ -202,17 +327,21 @@ CLI_UUID_DICT_15_5 = {
     "template": "F12384F6-CD17-4151-ACBA-AE0E3688539E",
 }
 
-CLI_TEMPLATE_SIDECAR_FILENAME = "Pumkins1.json"
+CLI_TEMPLATE_SIDECAR_FILENAME = "Pumkins1.jpg.json"
 
 CLI_UUID_DICT_14_6 = {"intrash": "3tljdX43R8+k6peNHVrJNQ"}
 
-PHOTOS_NOT_IN_TRASH_LEN_14_6 = 7
+PHOTOS_NOT_IN_TRASH_LEN_14_6 = 12
 PHOTOS_IN_TRASH_LEN_14_6 = 1
 PHOTOS_MISSING_14_6 = 1
 
 PHOTOS_NOT_IN_TRASH_LEN_15_5 = 13
-PHOTOS_IN_TRASH_LEN_15_5 = 1
+PHOTOS_IN_TRASH_LEN_15_5 = 2
 PHOTOS_MISSING_15_5 = 2
+
+PHOTOS_NOT_IN_TRASH_LEN_15_6 = 14
+PHOTOS_IN_TRASH_LEN_15_6 = 2
+PHOTOS_MISSING_15_6 = 1
 
 CLI_PLACES_JSON = """{"places": {"_UNKNOWN_": 1, "Maui, Wailea, Hawai'i, United States": 1, "Washington, District of Columbia, United States": 1}}"""
 
@@ -226,17 +355,70 @@ CLI_EXIFTOOL = {
         "XMP:Description": "Girl holding pumpkin",
         "XMP:PersonInImage": "Katie",
         "XMP:Subject": ["Kids", "Katie"],
+        "EXIF:GPSLatitudeRef": "N",
+        "EXIF:GPSLongitudeRef": "W",
+        "EXIF:GPSLatitude": 41.256566,
+        "EXIF:GPSLongitude": 95.940257,
+    }
+}
+
+CLI_EXIFTOOL_QUICKTIME = {
+    "35329C57-B963-48D6-BB75-6AFF9370CBBC": {
+        "File:FileName": "Jellyfish.MOV",
+        "XMP:Description": "Jellyfish Video",
+        "XMP:Title": "Jellyfish",
+        "XMP:TagsList": "Travel",
+        "XMP:Subject": "Travel",
+        "QuickTime:GPSCoordinates": "34.053345 -118.242349",
+        "QuickTime:CreationDate": "2020:01:05 14:13:13-08:00",
+        "QuickTime:CreateDate": "2020:01:05 22:13:13",
+        "QuickTime:ModifyDate": "2020:01:05 22:13:13",
+    },
+    "D1359D09-1373-4F3B-B0E3-1A4DE573E4A3": {
+        "File:FileName": "Jellyfish1.mp4",
+        "XMP:Description": "Jellyfish Video",
+        "XMP:Title": "Jellyfish1",
+        "XMP:TagsList": "Travel",
+        "XMP:Subject": "Travel",
+        "QuickTime:GPSCoordinates": "34.053345 -118.242349",
+        "QuickTime:CreationDate": "2020:12:04 21:21:52-08:00",
+        "QuickTime:CreateDate": "2020:12:05 05:21:52",
+        "QuickTime:ModifyDate": "2020:12:05 05:21:52",
+    },
+}
+
+CLI_EXIFTOOL_IGNORE_DATE_MODIFIED = {
+    "E9BC5C36-7CD1-40A1-A72B-8B8FAC227D51": {
+        "File:FileName": "wedding.jpg",
+        "EXIF:ImageDescription": "Bride Wedding day",
+        "XMP:Description": "Bride Wedding day",
+        "XMP:TagsList": "wedding",
+        "IPTC:Keywords": "wedding",
+        "XMP:PersonInImage": "Maria",
+        "XMP:Subject": ["wedding", "Maria"],
+        "EXIF:DateTimeOriginal": "2019:04:15 14:40:24",
+        "EXIF:CreateDate": "2019:04:15 14:40:24",
+        "EXIF:OffsetTimeOriginal": "-04:00",
+        "IPTC:DigitalCreationDate": "2019:04:15",
+        "IPTC:DateCreated": "2019:04:15",
+        "EXIF:ModifyDate": "2019:04:15 14:40:24",
     }
 }
 
 LABELS_JSON = {
     "labels": {
-        "Plant": 5,
+        "Plant": 7,
+        "Outdoor": 4,
+        "Sky": 3,
         "Tree": 2,
-        "Sky": 2,
-        "Outdoor": 2,
         "Art": 2,
         "Foliage": 2,
+        "People": 2,
+        "Agriculture": 2,
+        "Farm": 2,
+        "Food": 2,
+        "Vegetable": 2,
+        "Pumpkin": 2,
         "Waterways": 1,
         "River": 1,
         "Cloudy": 1,
@@ -254,13 +436,17 @@ LABELS_JSON = {
         "Vase": 1,
         "Container": 1,
         "Camera": 1,
+        "Child": 1,
+        "Clothing": 1,
+        "Jeans": 1,
+        "Straw Hay": 1,
     }
 }
 
 KEYWORDS_JSON = {
     "keywords": {
         "Kids": 4,
-        "wedding": 2,
+        "wedding": 3,
         "London 2018": 1,
         "St. James's Park": 1,
         "England": 1,
@@ -275,21 +461,131 @@ ALBUMS_JSON = {
     "albums": {
         "Raw": 4,
         "Pumpkin Farm": 3,
-        "AlbumInFolder": 2,
         "Test Album": 2,
+        "AlbumInFolder": 2,
         "I have a deleted twin": 1,
+        "2018-10 - Sponsion, Museum, Frühstück, Römermuseum": 1,
+        "2019-10/11 Paris Clermont": 1,
         "EmptyAlbum": 0,
     },
     "shared albums": {},
 }
 
-PERSONS_JSON = {"persons": {"Katie": 3, "Suzy": 2, "_UNKNOWN_": 1, "Maria": 1}}
+ALBUMS_STR = """albums:
+  Raw: 4
+  Pumpkin Farm: 3
+  Test Album: 2
+  AlbumInFolder: 2
+  I have a deleted twin: 1
+  2018-10 - Sponsion, Museum, Frühstück, Römermuseum: 1
+  EmptyAlbum: 0
+shared albums: {}
+"""
+
+PERSONS_JSON = {"persons": {"Katie": 3, "Suzy": 2, "_UNKNOWN_": 1, "Maria": 2}}
+
+UUID_EXPECTED_FROM_FILE = [
+    "E9BC5C36-7CD1-40A1-A72B-8B8FAC227D51",
+    "6191423D-8DB8-4D4C-92BE-9BBBA308AAC4",
+    "A92D9C26-3A50-4197-9388-CB5F7DB9FA91",
+]
+
+UUID_NOT_FROM_FILE = "D79B8D77-BFFC-460B-9312-034F2877D35B"
+
+CLI_EXPORT_UUID_FROM_FILE_FILENAMES = [
+    "IMG_1994.JPG",
+    "IMG_1994.cr2",
+    "Tulips.jpg",
+    "Tulips_edited.jpeg",
+    "wedding.jpg",
+    "wedding_edited.jpeg",
+]
+
+UUID_HAS_COMMENTS = [
+    "4E4944A0-3E5C-4028-9600-A8709F2FA1DB",
+    "4AD7C8EF-2991-4519-9D3A-7F44A6F031BE",
+    "7572C53E-1D6A-410C-A2B1-18CCA3B5AD9F",
+]
+UUID_NO_COMMENTS = ["4F835581-5AB9-4DEC-9971-3E64A0894B04"]
+UUID_HAS_LIKES = [
+    "C008048F-8767-4992-85B8-13E798F6DC3C",
+    "65BADBD7-A50C-4956-96BA-1BB61155DA17",
+    "4AD7C8EF-2991-4519-9D3A-7F44A6F031BE",
+]
+UUID_NO_LIKES = [
+    "45099D34-A414-464F-94A2-60D6823679C8",
+    "1C1C8F1F-826B-4A24-B1CB-56628946A834",
+]
+
+
+def modify_file(filename):
+    """ appends data to a file to modify it """
+    with open(filename, "ab") as fd:
+        fd.write(b"foo")
+
+
+@pytest.fixture(autouse=True)
+def reset_globals():
+    """ reset globals in __main__ that tests may have changed """
+    yield
+    osxphotos.__main__.VERBOSE = False
+
 
 # determine if exiftool installed so exiftool tests can be skipped
 try:
     exiftool = get_exiftool_path()
 except:
     exiftool = None
+
+
+def touch_all_photos_in_db(dbpath):
+    """touch date on all photos in a library
+        helper function for --touch-file tests
+
+    Args:
+        dbpath: path to photos library to touch
+    """
+    import os
+    import time
+
+    import osxphotos
+
+    ts = int(time.time())
+    for photo in osxphotos.PhotosDB(dbpath).photos():
+        if photo.path is not None:
+            os.utime(photo.path, (ts, ts))
+        if photo.path_edited is not None:
+            os.utime(photo.path_edited, (ts, ts))
+        if photo.path_raw is not None:
+            os.utime(photo.path_raw, (ts, ts))
+        if photo.path_live_photo is not None:
+            os.utime(photo.path_live_photo, (ts, ts))
+
+
+def setup_touch_tests():
+    """ perform setup needed for --touch-file tests """
+    import os
+    import time
+    import logging
+    import osxphotos
+
+    # touch all photos so they do not match PhotoInfo.date
+    touch_all_photos_in_db(PHOTOS_DB_TOUCH)
+
+    # adjust a couple of the photos so they're file times *are* correct
+    photos = osxphotos.PhotosDB(PHOTOS_DB_TOUCH).photos_by_uuid(
+        CLI_EXPORT_BY_DATE_TOUCH_UUID
+    )
+    for photo in photos:
+        ts = int(photo.date.timestamp())
+        if photo.path is not None:
+            os.utime(photo.path, (ts, ts))
+        if photo.path_edited is not None:
+            os.utime(photo.path_edited, (ts, ts))
+        if photo.path_raw is not None:
+            os.utime(photo.path_raw, (ts, ts))
+        if photo.path_live_photo is not None:
+            os.utime(photo.path_live_photo, (ts, ts))
 
 
 def test_osxphotos():
@@ -355,7 +651,6 @@ def test_query_uuid():
             "--json",
             "--db",
             os.path.join(cwd, CLI_PHOTOS_DB),
-            # "./tests/Test-10.15.1.photoslibrary",
             "--uuid",
             "D79B8D77-BFFC-460B-9312-034F2877D35B",
         ],
@@ -380,6 +675,121 @@ def test_query_uuid():
             assert json_expected[key_] in json_got[key_]
 
 
+def test_query_uuid_from_file_1():
+    """ Test query with --uuid-from-file """
+    import json
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import query
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    result = runner.invoke(
+        query,
+        [
+            "--json",
+            "--db",
+            os.path.join(cwd, PHOTOS_DB_15_5),
+            "--uuid-from-file",
+            UUID_FILE,
+        ],
+    )
+    assert result.exit_code == 0
+
+    # build list of uuids we got from the output JSON
+    json_got = json.loads(result.output)
+    uuid_got = [photo["uuid"] for photo in json_got]
+    assert sorted(UUID_EXPECTED_FROM_FILE) == sorted(uuid_got)
+
+
+def test_query_has_comment():
+    """ Test query with --has-comment """
+    import json
+    import os
+    import os.path
+    from osxphotos.__main__ import query
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    result = runner.invoke(
+        query,
+        ["--json", "--db", os.path.join(cwd, COMMENTS_PHOTOS_DB), "--has-comment"],
+    )
+    assert result.exit_code == 0
+
+    # build list of uuids we got from the output JSON
+    json_got = json.loads(result.output)
+    uuid_got = [photo["uuid"] for photo in json_got]
+    assert sorted(uuid_got) == sorted(UUID_HAS_COMMENTS)
+
+
+def test_query_no_comment():
+    """ Test query with --no-comment """
+    import json
+    import os
+    import os.path
+    from osxphotos.__main__ import query
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    result = runner.invoke(
+        query, ["--json", "--db", os.path.join(cwd, COMMENTS_PHOTOS_DB), "--no-comment"]
+    )
+    assert result.exit_code == 0
+
+    # build list of uuids we got from the output JSON
+    json_got = json.loads(result.output)
+    uuid_got = [photo["uuid"] for photo in json_got]
+    for uuid in UUID_NO_COMMENTS:
+        assert uuid in uuid_got
+    for uuid in uuid_got:
+        assert uuid not in UUID_HAS_COMMENTS
+
+
+def test_query_has_likes():
+    """ Test query with --has-likes"""
+    import json
+    import os
+    import os.path
+    from osxphotos.__main__ import query
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    result = runner.invoke(
+        query, ["--json", "--db", os.path.join(cwd, COMMENTS_PHOTOS_DB), "--has-likes"]
+    )
+    assert result.exit_code == 0
+
+    # build list of uuids we got from the output JSON
+    json_got = json.loads(result.output)
+    uuid_got = [photo["uuid"] for photo in json_got]
+    assert sorted(uuid_got) == sorted(UUID_HAS_LIKES)
+
+
+def test_query_no_likes():
+    """ Test query with --no-likes"""
+    import json
+    import os
+    import os.path
+    from osxphotos.__main__ import query
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    result = runner.invoke(
+        query, ["--json", "--db", os.path.join(cwd, COMMENTS_PHOTOS_DB), "--no-likes"]
+    )
+    assert result.exit_code == 0
+
+    # build list of uuids we got from the output JSON
+    json_got = json.loads(result.output)
+    uuid_got = [photo["uuid"] for photo in json_got]
+    for uuid in UUID_NO_LIKES:
+        assert uuid in uuid_got
+    for uuid in uuid_got:
+        assert uuid not in UUID_HAS_LIKES
+
+
 def test_export():
     import glob
     import os
@@ -395,6 +805,33 @@ def test_export():
         assert result.exit_code == 0
         files = glob.glob("*")
         assert sorted(files) == sorted(CLI_EXPORT_FILENAMES)
+
+
+def test_export_uuid_from_file():
+    """ Test export with --uuid-from-file """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_5),
+                ".",
+                "-V",
+                "--uuid-from-file",
+                os.path.join(cwd, UUID_FILE),
+            ],
+        )
+        assert result.exit_code == 0
+        files = glob.glob("*")
+        assert sorted(files) == sorted(CLI_EXPORT_UUID_FROM_FILE_FILENAMES)
 
 
 def test_export_as_hardlink():
@@ -470,7 +907,7 @@ def test_export_using_hardlinks_incompat_options():
                 "-V",
             ],
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Incompatible export options" in result.output
 
 
@@ -512,12 +949,47 @@ def test_export_skip_edited():
         assert "St James Park_edited.jpeg" not in files
 
 
+def test_export_skip_original_if_edited():
+    """ test export with --skip-original-if-edited """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [os.path.join(cwd, PHOTOS_DB_15_6), ".", "--skip-original-if-edited", "-V"],
+        )
+        assert result.exit_code == 0
+        assert "Skipping original version of wedding.jpg" in result.output
+        assert "Skipping original version of Tulips.jpg" in result.output
+        assert "Skipping original version of St James Park.jpg" in result.output
+        files = glob.glob("*")
+
+        # make sure originals of edited version not exported
+        assert "wedding.jpg" not in files
+        assert "Tulips.jpg" not in files
+        assert "St James Park.jpg" not in files
+
+        # make sure edited versions did get exported
+        assert "wedding_edited.jpeg" in files
+        assert "Tulips_edited.jpeg" in files
+        assert "St James Park_edited.jpeg" in files
+
+        # make sure other originals did get exported
+        assert "Pumkins2.jpg" in files
+
+
 @pytest.mark.skipif(exiftool is None, reason="exiftool not installed")
 def test_export_exiftool():
     import glob
     import os
     import os.path
-    import osxphotos
     from osxphotos.__main__ import export
     from osxphotos.exiftool import ExifTool
 
@@ -529,7 +1001,7 @@ def test_export_exiftool():
             result = runner.invoke(
                 export,
                 [
-                    os.path.join(cwd, PHOTOS_DB_15_4),
+                    os.path.join(cwd, PHOTOS_DB_15_6),
                     ".",
                     "-V",
                     "--exiftool",
@@ -541,9 +1013,83 @@ def test_export_exiftool():
             files = glob.glob("*")
             assert sorted(files) == sorted([CLI_EXIFTOOL[uuid]["File:FileName"]])
 
-            exif = ExifTool(CLI_EXIFTOOL[uuid]["File:FileName"]).as_dict()
+            exif = ExifTool(CLI_EXIFTOOL[uuid]["File:FileName"]).asdict()
             for key in CLI_EXIFTOOL[uuid]:
                 assert exif[key] == CLI_EXIFTOOL[uuid][key]
+
+
+@pytest.mark.skipif(exiftool is None, reason="exiftool not installed")
+def test_export_exiftool_ignore_date_modified():
+    import glob
+    import os
+    import os.path
+    from osxphotos.__main__ import export
+    from osxphotos.exiftool import ExifTool
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        for uuid in CLI_EXIFTOOL_IGNORE_DATE_MODIFIED:
+            result = runner.invoke(
+                export,
+                [
+                    os.path.join(cwd, PHOTOS_DB_15_6),
+                    ".",
+                    "-V",
+                    "--exiftool",
+                    "--ignore-date-modified",
+                    "--uuid",
+                    f"{uuid}",
+                ],
+            )
+            assert result.exit_code == 0
+
+            exif = ExifTool(
+                CLI_EXIFTOOL_IGNORE_DATE_MODIFIED[uuid]["File:FileName"]
+            ).asdict()
+            for key in CLI_EXIFTOOL_IGNORE_DATE_MODIFIED[uuid]:
+                assert exif[key] == CLI_EXIFTOOL_IGNORE_DATE_MODIFIED[uuid][key]
+
+
+@pytest.mark.skipif(exiftool is None, reason="exiftool not installed")
+def test_export_exiftool_quicktime():
+    """ test --exiftol correctly writes QuickTime tags """
+    import glob
+    import os
+    import os.path
+    from osxphotos.__main__ import export
+    from osxphotos.exiftool import ExifTool
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        for uuid in CLI_EXIFTOOL_QUICKTIME:
+            result = runner.invoke(
+                export,
+                [
+                    os.path.join(cwd, PHOTOS_DB_15_7),
+                    ".",
+                    "-V",
+                    "--exiftool",
+                    "--uuid",
+                    f"{uuid}",
+                ],
+            )
+            assert result.exit_code == 0
+            files = glob.glob("*")
+            assert sorted(files) == sorted(
+                [CLI_EXIFTOOL_QUICKTIME[uuid]["File:FileName"]]
+            )
+
+            exif = ExifTool(CLI_EXIFTOOL_QUICKTIME[uuid]["File:FileName"]).asdict()
+            for key in CLI_EXIFTOOL_QUICKTIME[uuid]:
+                assert exif[key] == CLI_EXIFTOOL_QUICKTIME[uuid][key]
+
+            # clean up exported files to avoid name conflicts
+            for filename in files:
+                os.unlink(filename)
 
 
 def test_export_edited_suffix():
@@ -573,12 +1119,189 @@ def test_export_edited_suffix():
         assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_EDITED_SUFFIX)
 
 
-def test_query_date():
+def test_export_edited_suffix_template():
+    """ test export with --edited-suffix template """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--edited-suffix",
+                CLI_EXPORT_EDITED_SUFFIX_TEMPLATE,
+                "-V",
+            ],
+        )
+        assert result.exit_code == 0
+        files = glob.glob("*")
+        assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_EDITED_SUFFIX_TEMPLATE)
+
+
+def test_export_original_suffix():
+    """ test export with --original-suffix """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--original-suffix",
+                CLI_EXPORT_ORIGINAL_SUFFIX,
+                "-V",
+            ],
+        )
+        assert result.exit_code == 0
+        files = glob.glob("*")
+        assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_ORIGINAL_SUFFIX)
+
+
+def test_export_original_suffix_template():
+    """ test export with --original-suffix template """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--original-suffix",
+                CLI_EXPORT_ORIGINAL_SUFFIX_TEMPLATE,
+                "-V",
+            ],
+        )
+        assert result.exit_code == 0
+        files = glob.glob("*")
+        assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_ORIGINAL_SUFFIX_TEMPLATE)
+
+
+@pytest.mark.skipif(
+    "OSXPHOTOS_TEST_CONVERT" not in os.environ,
+    reason="Skip if running in Github actions, no GPU.",
+)
+def test_export_convert_to_jpeg():
+    """ test --convert-to-jpeg """
+    import glob
+    import os
+    import os.path
+    import pathlib
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export, [os.path.join(cwd, PHOTOS_DB_15_6), ".", "-V", "--convert-to-jpeg"]
+        )
+        assert result.exit_code == 0
+        files = glob.glob("*")
+        assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_CONVERT_TO_JPEG)
+        large_file = pathlib.Path(CLI_EXPORT_CONVERT_TO_JPEG_LARGE_FILE)
+        assert large_file.stat().st_size > 10000000
+
+
+@pytest.mark.skipif(
+    "OSXPHOTOS_TEST_CONVERT" not in os.environ,
+    reason="Skip if running in Github actions, no GPU.",
+)
+def test_export_convert_to_jpeg_quality():
+    """ test --convert-to-jpeg --jpeg-quality """
+    import glob
+    import os
+    import os.path
+    import pathlib
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_6),
+                ".",
+                "-V",
+                "--convert-to-jpeg",
+                "--jpeg-quality",
+                "0.2",
+            ],
+        )
+        assert result.exit_code == 0
+        files = glob.glob("*")
+        assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_CONVERT_TO_JPEG)
+        large_file = pathlib.Path(CLI_EXPORT_CONVERT_TO_JPEG_LARGE_FILE)
+        assert large_file.stat().st_size < 1000000
+
+
+@pytest.mark.skipif(
+    "OSXPHOTOS_TEST_CONVERT" not in os.environ,
+    reason="Skip if running in Github actions, no GPU.",
+)
+def test_export_convert_to_jpeg_skip_raw():
+    """ test --convert-to-jpeg """
+    import glob
+    import os
+    import os.path
+    import pathlib
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_6),
+                ".",
+                "-V",
+                "--convert-to-jpeg",
+                "--skip-raw",
+            ],
+        )
+        assert result.exit_code == 0
+        files = glob.glob("*")
+        assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_CONVERT_TO_JPEG_SKIP_RAW)
+
+
+def test_query_date_1():
+    """ Test --from-date and --to-date """
     import json
     import osxphotos
     import os
     import os.path
+    import time
     from osxphotos.__main__ import query
+
+    os.environ["TZ"] = "US/Pacific"
+    time.tzset()
 
     runner = CliRunner()
     cwd = os.getcwd()
@@ -590,6 +1313,66 @@ def test_query_date():
             os.path.join(cwd, CLI_PHOTOS_DB),
             "--from-date=2018-09-28",
             "--to-date=2018-09-28T23:00:00",
+        ],
+    )
+    assert result.exit_code == 0
+
+    json_got = json.loads(result.output)
+    assert len(json_got) == 4
+
+
+def test_query_date_2():
+    """ Test --from-date and --to-date """
+    import json
+    import osxphotos
+    import os
+    import os.path
+    import time
+    from osxphotos.__main__ import query
+
+    os.environ["TZ"] = "Asia/Jerusalem"
+    time.tzset()
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    result = runner.invoke(
+        query,
+        [
+            "--json",
+            "--db",
+            os.path.join(cwd, CLI_PHOTOS_DB),
+            "--from-date=2018-09-28",
+            "--to-date=2018-09-28T23:00:00",
+        ],
+    )
+    assert result.exit_code == 0
+
+    json_got = json.loads(result.output)
+    assert len(json_got) == 2
+
+
+def test_query_date_timezone():
+    """ Test --from-date, --to-date with ISO 8601 timezone """
+    import json
+    import osxphotos
+    import os
+    import os.path
+    import time
+    from osxphotos.__main__ import query
+
+    os.environ["TZ"] = "US/Pacific"
+    time.tzset()
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    result = runner.invoke(
+        query,
+        [
+            "--json",
+            "--db",
+            os.path.join(cwd, CLI_PHOTOS_DB),
+            "--from-date=2018-09-28T00:00:00-07:00",
+            "--to-date=2018-09-28T23:00:00-07:00",
         ],
     )
     assert result.exit_code == 0
@@ -971,7 +1754,7 @@ def test_query_label_4():
     )
     assert result.exit_code == 0
     json_got = json.loads(result.output)
-    assert len(json_got) == 6
+    assert len(json_got) == 8
 
 
 def test_query_deleted_deleted_only():
@@ -1026,11 +1809,11 @@ def test_query_deleted_2():
     runner = CliRunner()
     cwd = os.getcwd()
     result = runner.invoke(
-        query, ["--json", "--db", os.path.join(cwd, PHOTOS_DB_14_6), "--deleted"]
+        query, ["--json", "--db", os.path.join(cwd, PHOTOS_DB_15_6), "--deleted"]
     )
     assert result.exit_code == 0
     json_got = json.loads(result.output)
-    assert len(json_got) == PHOTOS_NOT_IN_TRASH_LEN_14_6 + PHOTOS_IN_TRASH_LEN_14_6
+    assert len(json_got) == PHOTOS_NOT_IN_TRASH_LEN_15_6 + PHOTOS_IN_TRASH_LEN_15_6
 
 
 def test_query_deleted_3():
@@ -1063,11 +1846,11 @@ def test_query_deleted_4():
     runner = CliRunner()
     cwd = os.getcwd()
     result = runner.invoke(
-        query, ["--json", "--db", os.path.join(cwd, PHOTOS_DB_14_6), "--deleted-only"]
+        query, ["--json", "--db", os.path.join(cwd, PHOTOS_DB_15_6), "--deleted-only"]
     )
     assert result.exit_code == 0
     json_got = json.loads(result.output)
-    assert len(json_got) == PHOTOS_IN_TRASH_LEN_14_6
+    assert len(json_got) == PHOTOS_IN_TRASH_LEN_15_6
     assert json_got[0]["intrash"]
 
 
@@ -1141,6 +1924,142 @@ def test_export_sidecar_templates():
             exifdata[0]["EXIF:ImageDescription"][0]
             == "Girls with pumpkins Katie, Suzy Kids Pumpkin Farm, Test Album"
         )
+
+
+def test_export_sidecar_update():
+    """ test sidecar don't update if not changed and do update if changed """
+    import datetime
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.fileutil import FileUtil
+
+    from osxphotos.__main__ import cli
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli,
+            [
+                "export",
+                "--db",
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--sidecar=json",
+                "--sidecar=xmp",
+                f"--uuid={CLI_EXPORT_UUID}",
+                "-V",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Writing XMP sidecar" in result.output
+        assert "Writing exiftool JSON sidecar" in result.output
+
+        # delete a sidecar file and run update
+        fileutil = FileUtil()
+        fileutil.unlink(CLI_EXPORT_SIDECAR_FILENAMES[1])
+
+        result = runner.invoke(
+            cli,
+            [
+                "export",
+                "--db",
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--sidecar=json",
+                "--sidecar=xmp",
+                f"--uuid={CLI_EXPORT_UUID}",
+                "-V",
+                "--update",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Skipped up to date XMP sidecar" in result.output
+        assert "Writing exiftool JSON sidecar" in result.output
+
+        # run update again, no sidecar files should update
+        result = runner.invoke(
+            cli,
+            [
+                "export",
+                "--db",
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--sidecar=json",
+                "--sidecar=xmp",
+                f"--uuid={CLI_EXPORT_UUID}",
+                "-V",
+                "--update",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Skipped up to date XMP sidecar" in result.output
+        assert "Skipped up to date exiftool JSON sidecar" in result.output
+
+        # touch a file and export again
+        ts = datetime.datetime.now().timestamp() + 1000
+        fileutil.utime(CLI_EXPORT_SIDECAR_FILENAMES[2], (ts, ts))
+
+        result = runner.invoke(
+            cli,
+            [
+                "export",
+                "--db",
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--sidecar=json",
+                "--sidecar=xmp",
+                f"--uuid={CLI_EXPORT_UUID}",
+                "-V",
+                "--update",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Writing XMP sidecar" in result.output
+        assert "Skipped up to date exiftool JSON sidecar" in result.output
+
+        # run update again, no sidecar files should update
+        result = runner.invoke(
+            cli,
+            [
+                "export",
+                "--db",
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--sidecar=json",
+                "--sidecar=xmp",
+                f"--uuid={CLI_EXPORT_UUID}",
+                "-V",
+                "--update",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Skipped up to date XMP sidecar" in result.output
+        assert "Skipped up to date exiftool JSON sidecar" in result.output
+
+        # run update again with updated metadata, forcing update
+        result = runner.invoke(
+            cli,
+            [
+                "export",
+                "--db",
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "--sidecar=json",
+                "--sidecar=xmp",
+                f"--uuid={CLI_EXPORT_UUID}",
+                "-V",
+                "--update",
+                "--keyword-template",
+                "foo",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Writing XMP sidecar" in result.output
+        assert "Writing exiftool JSON sidecar" in result.output
 
 
 def test_export_live():
@@ -1516,6 +2435,103 @@ def test_export_filename_template_2():
         assert sorted(files) == sorted(CLI_EXPORTED_FILENAME_TEMPLATE_FILENAMES2)
 
 
+def test_export_filename_template_pathsep_in_name_1():
+    """ export photos using filename template with folder_album and "/" in album name """
+    import locale
+    import os
+    import os.path
+    import pathlib
+    from osxphotos.__main__ import export
+
+    locale.setlocale(locale.LC_ALL, "en_US")
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_6),
+                ".",
+                "-V",
+                "--directory",
+                "{folder_album,None}",
+                "--uuid",
+                CLI_EXPORT_UUID_STATUE,
+            ],
+        )
+        assert result.exit_code == 0
+        for fname in CLI_EXPORTED_FILENAME_TEMPLATE_FILENAMES_PATHSEP:
+            # assert fname in result.output
+            assert pathlib.Path(fname).is_file()
+
+
+def test_export_filename_template_pathsep_in_name_2():
+    """ export photos using filename template with keyword and "/" in keyword """
+    import locale
+    import os
+    import os.path
+    import pathlib
+    from osxphotos.__main__ import export
+
+    locale.setlocale(locale.LC_ALL, "en_US")
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_6),
+                ".",
+                "-V",
+                "--directory",
+                "{keyword}",
+                "--filename",
+                "{keyword}_{original_name}",
+                "--uuid",
+                CLI_EXPORT_UUID_KEYWORD_PATHSEP,
+            ],
+        )
+        assert result.exit_code == 0
+        for fname in CLI_EXPORTED_FILENAME_TEMPLATE_FILENAMES_KEYWORD_PATHSEP:
+            assert pathlib.Path(fname).is_file()
+
+
+def test_export_filename_template_long_description():
+    """ export photos using filename template with description that exceeds max length """
+    import locale
+    import os
+    import os.path
+    import pathlib
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    locale.setlocale(locale.LC_ALL, "en_US")
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_6),
+                ".",
+                "-V",
+                "--filename",
+                "{descr}",
+                "--uuid",
+                CLI_EXPORT_UUID_LONG_DESCRIPTION,
+            ],
+        )
+        assert result.exit_code == 0
+        for fname in CLI_EXPORTED_FILENAME_TEMPLATE_LONG_DESCRIPTION:
+            assert pathlib.Path(fname).is_file()
+
+
 def test_export_filename_template_3():
     """ test --filename with invalid template """
     import glob
@@ -1561,6 +2577,32 @@ def test_export_album():
         assert result.exit_code == 0
         files = glob.glob("*")
         assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_ALBUM)
+
+
+def test_export_album_unicode_name():
+    """Test export of an album with non-English characters in name """
+    import glob
+    import os
+    import os.path
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_6),
+                ".",
+                "--album",
+                "2018-10 - Sponsion, Museum, Frühstück, Römermuseum",
+                "-V",
+            ],
+        )
+        assert result.exit_code == 0
+        files = glob.glob("*")
+        assert sorted(files) == sorted(CLI_EXPORT_FILENAMES_ALBUM_UNICODE)
 
 
 def test_export_album_deleted_twin():
@@ -1968,22 +3010,24 @@ def test_export_sidecar_keyword_template():
 
         json_expected = json.loads(
             """
-        [{"_CreatedBy": "osxphotos, https://github.com/RhetTbull/osxphotos",
-        "EXIF:ImageDescription": "Girl holding pumpkin",
-        "XMP:Description": "Girl holding pumpkin",
-        "XMP:Title": "I found one!",
-        "XMP:TagsList": ["Kids", "Multi Keyword", "Test Album", "Pumpkin Farm"],
-        "IPTC:Keywords": ["Kids", "Multi Keyword", "Test Album", "Pumpkin Farm"],
-        "XMP:PersonInImage": ["Katie"],
-        "XMP:Subject": ["Kids", "Katie"],
-        "EXIF:DateTimeOriginal": "2018:09:28 16:07:07",
-        "EXIF:OffsetTimeOriginal": "-04:00",
-        "EXIF:ModifyDate": "2020:04:11 12:34:16"}]"""
+            [{"EXIF:ImageDescription": "Girl holding pumpkin", 
+            "XMP:Description": "Girl holding pumpkin", 
+            "XMP:Title": "I found one!", 
+            "XMP:TagsList": ["Kids", "Multi Keyword", "Pumpkin Farm", "Test Album"], 
+            "IPTC:Keywords": ["Kids", "Multi Keyword", "Pumpkin Farm", "Test Album"], 
+            "XMP:PersonInImage": ["Katie"], 
+            "XMP:Subject": ["Kids", "Katie"], 
+            "EXIF:DateTimeOriginal": "2018:09:28 16:07:07", 
+            "EXIF:CreateDate": "2018:09:28 16:07:07", 
+            "EXIF:OffsetTimeOriginal": "-04:00", 
+            "IPTC:DateCreated": "2018:09:28",
+            "IPTC:TimeCreated": "16:07:07-04:00",
+            "EXIF:ModifyDate": "2018:09:28 16:07:07"}]
+            """
         )[0]
 
-        json_file = open("Pumkins2.json", "r")
-        json_got = json.load(json_file)[0]
-        json_file.close()
+        with open("Pumkins2.jpg.json", "r") as json_file:
+            json_got = json.load(json_file)[0]
 
         # some gymnastics to account for different sort order in different pythons
         for k, v in json_got.items():
@@ -2025,7 +3069,7 @@ def test_export_update_basic():
         )
         assert result.exit_code == 0
         assert (
-            "Exported: 0 photos, updated: 0 photos, skipped: 8 photos, updated EXIF data: 0 photos"
+            "Processed: 7 photos, exported: 0, updated: 0, skipped: 8, updated EXIF data: 0, missing: 1, error: 0"
             in result.output
         )
 
@@ -2109,7 +3153,17 @@ def test_export_update_exiftool():
         )
         assert result.exit_code == 0
         assert (
-            "Exported: 0 photos, updated: 8 photos, skipped: 0 photos, updated EXIF data: 8 photos"
+            "Processed: 7 photos, exported: 0, updated: 8, skipped: 0, updated EXIF data: 8, missing: 1, error: 0"
+            in result.output
+        )
+
+        # update with exiftool again, should be no changes
+        result = runner.invoke(
+            export, [os.path.join(cwd, CLI_PHOTOS_DB), ".", "--update", "--exiftool"]
+        )
+        assert result.exit_code == 0
+        assert (
+            "Processed: 7 photos, exported: 0, updated: 0, skipped: 8, updated EXIF data: 0, missing: 1, error: 0"
             in result.output
         )
 
@@ -2146,7 +3200,7 @@ def test_export_update_hardlink():
         )
         assert result.exit_code == 0
         assert (
-            "Exported: 0 photos, updated: 8 photos, skipped: 0 photos, updated EXIF data: 0 photos"
+            "Processed: 7 photos, exported: 0, updated: 8, skipped: 0, updated EXIF data: 0, missing: 1, error: 0"
             in result.output
         )
         assert not os.path.samefile(CLI_EXPORT_UUID_FILENAME, photo.path)
@@ -2185,7 +3239,7 @@ def test_export_update_hardlink_exiftool():
         )
         assert result.exit_code == 0
         assert (
-            "Exported: 0 photos, updated: 8 photos, skipped: 0 photos, updated EXIF data: 8 photos"
+            "Processed: 7 photos, exported: 0, updated: 8, skipped: 0, updated EXIF data: 8, missing: 1, error: 0"
             in result.output
         )
         assert not os.path.samefile(CLI_EXPORT_UUID_FILENAME, photo.path)
@@ -2223,7 +3277,7 @@ def test_export_update_edits():
         )
         assert result.exit_code == 0
         assert (
-            "Exported: 1 photo, updated: 1 photo, skipped: 6 photos, updated EXIF data: 0 photos"
+            "Processed: 7 photos, exported: 1, updated: 1, skipped: 6, updated EXIF data: 0, missing: 1, error: 0"
             in result.output
         )
 
@@ -2254,8 +3308,12 @@ def test_export_update_no_db():
             export, [os.path.join(cwd, CLI_PHOTOS_DB), ".", "--update"]
         )
         assert result.exit_code == 0
+
+        # unedited files will be skipped because their signatures will compare but
+        # edited files will be re-exported because there won't be an edited signature
+        # in the database
         assert (
-            "Exported: 0 photos, updated: 0 photos, skipped: 8 photos, updated EXIF data: 0 photos"
+            "Processed: 7 photos, exported: 0, updated: 2, skipped: 6, updated EXIF data: 0, missing: 1, error: 0"
             in result.output
         )
         assert os.path.isfile(OSXPHOTOS_EXPORT_DB)
@@ -2294,15 +3352,15 @@ def test_export_then_hardlink():
             ],
         )
         assert result.exit_code == 0
-        assert "Exported: 8 photos" in result.output
+        assert "Processed: 7 photos, exported: 8, missing: 1, error: 0" in result.output
         assert os.path.samefile(CLI_EXPORT_UUID_FILENAME, photo.path)
 
 
 def test_export_dry_run():
     """ test export with dry-run flag """
-    import glob
     import os
     import os.path
+    import re
     import osxphotos
     from osxphotos.__main__ import export
 
@@ -2314,9 +3372,9 @@ def test_export_dry_run():
             export, [os.path.join(cwd, CLI_PHOTOS_DB), ".", "-V", "--dry-run"]
         )
         assert result.exit_code == 0
-        assert "Exported: 8 photos" in result.output
+        assert "Processed: 7 photos, exported: 8, missing: 1, error: 0" in result.output
         for filepath in CLI_EXPORT_FILENAMES:
-            assert f"Exported {filepath}" in result.output
+            assert re.search(r"Exported.*" + f"{filepath}", result.output)
             assert not os.path.isfile(filepath)
 
 
@@ -2358,7 +3416,7 @@ def test_export_update_edits_dry_run():
         )
         assert result.exit_code == 0
         assert (
-            "Exported: 1 photo, updated: 1 photo, skipped: 6 photos, updated EXIF data: 0 photos"
+            "Processed: 7 photos, exported: 1, updated: 1, skipped: 6, updated EXIF data: 0, missing: 1, error: 0"
             in result.output
         )
 
@@ -2368,10 +3426,10 @@ def test_export_update_edits_dry_run():
 
 def test_export_directory_template_1_dry_run():
     """ test export using directory template with dry-run flag """
-    import glob
     import locale
     import os
     import os.path
+    import re
     import osxphotos
     from osxphotos.__main__ import export
 
@@ -2393,11 +3451,526 @@ def test_export_directory_template_1_dry_run():
             ],
         )
         assert result.exit_code == 0
-        assert "Exported: 8 photos" in result.output
+        assert "exported: 8" in result.output
         workdir = os.getcwd()
         for filepath in CLI_EXPORTED_DIRECTORY_TEMPLATE_FILENAMES1:
-            assert f"Exported {filepath}" in result.output
+            assert re.search(r"Exported.*" + f"{filepath}", result.output)
             assert not os.path.isfile(os.path.join(workdir, filepath))
+
+
+def test_export_touch_files():
+    """ test export with --touch-files """
+    import os
+    import time
+
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    os.environ["TZ"] = "US/Pacific"
+    time.tzset()
+
+    setup_touch_tests()
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "-V",
+                "--touch-file",
+                "--export-by-date",
+            ],
+        )
+        assert result.exit_code == 0
+
+        assert "exported: 18" in result.output
+        assert "touched date: 16" in result.output
+
+        for fname, mtime in zip(CLI_EXPORT_BY_DATE, CLI_EXPORT_BY_DATE_TOUCH_TIMES):
+            st = os.stat(fname)
+            assert int(st.st_mtime) == int(mtime)
+
+
+def test_export_touch_files_update():
+    """ test complex export scenario with --update and --touch-files """
+    import os
+    import pathlib
+    import time
+
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    os.environ["TZ"] = "US/Pacific"
+    time.tzset()
+
+    setup_touch_tests()
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        # basic export with dry-run
+        result = runner.invoke(
+            export,
+            [os.path.join(cwd, PHOTOS_DB_TOUCH), ".", "--export-by-date", "--dry-run"],
+        )
+        assert result.exit_code == 0
+
+        assert "exported: 18" in result.output
+
+        assert not pathlib.Path(CLI_EXPORT_BY_DATE[0]).is_file()
+
+        # without dry-run
+        result = runner.invoke(
+            export, [os.path.join(cwd, PHOTOS_DB_TOUCH), ".", "--export-by-date"]
+        )
+        assert result.exit_code == 0
+
+        assert "exported: 18" in result.output
+
+        assert pathlib.Path(CLI_EXPORT_BY_DATE[0]).is_file()
+
+        # --update
+        result = runner.invoke(
+            export,
+            [os.path.join(cwd, PHOTOS_DB_TOUCH), ".", "--export-by-date", "--update"],
+        )
+        assert result.exit_code == 0
+
+        assert "skipped: 18" in result.output
+
+        # --update --touch-file --dry-run
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--touch-file",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "skipped: 18" in result.output
+        assert "touched date: 16" in result.output
+
+        for fname, mtime in zip(
+            CLI_EXPORT_BY_DATE_NEED_TOUCH, CLI_EXPORT_BY_DATE_NEED_TOUCH_TIMES
+        ):
+            st = os.stat(fname)
+            assert int(st.st_mtime) != int(mtime)
+
+        # --update --touch-file
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--touch-file",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "skipped: 18" in result.output
+        assert "touched date: 16" in result.output
+
+        for fname, mtime in zip(
+            CLI_EXPORT_BY_DATE_NEED_TOUCH, CLI_EXPORT_BY_DATE_NEED_TOUCH_TIMES
+        ):
+            st = os.stat(fname)
+            assert int(st.st_mtime) == int(mtime)
+
+        # touch one file and run update again
+        ts = time.time()
+        os.utime(CLI_EXPORT_BY_DATE[0], (ts, ts))
+
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--touch-file",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "updated: 1, skipped: 17" in result.output
+        assert "touched date: 1" in result.output
+
+        for fname, mtime in zip(CLI_EXPORT_BY_DATE, CLI_EXPORT_BY_DATE_TOUCH_TIMES):
+            st = os.stat(fname)
+            assert int(st.st_mtime) == int(mtime)
+
+        # run update without --touch-file
+        result = runner.invoke(
+            export,
+            [os.path.join(cwd, PHOTOS_DB_TOUCH), ".", "--export-by-date", "--update"],
+        )
+        assert result.exit_code == 0
+
+        assert "skipped: 18" in result.output
+
+
+@pytest.mark.skip("TODO: This fails on some machines but not all")
+# @pytest.mark.skipif(exiftool is None, reason="exiftool not installed")
+def test_export_touch_files_exiftool_update():
+    """ test complex export scenario with --update, --exiftool, and --touch-files """
+    import os
+    import pathlib
+    import time
+
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    os.environ["TZ"] = "US/Pacific"
+    time.tzset()
+
+    setup_touch_tests()
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        # basic export with dry-run
+        result = runner.invoke(
+            export,
+            [os.path.join(cwd, PHOTOS_DB_TOUCH), ".", "--export-by-date", "--dry-run"],
+        )
+        assert result.exit_code == 0
+
+        assert "exported: 18" in result.output
+
+        assert not pathlib.Path(CLI_EXPORT_BY_DATE[0]).is_file()
+
+        # without dry-run
+        result = runner.invoke(
+            export, [os.path.join(cwd, PHOTOS_DB_TOUCH), ".", "--export-by-date"]
+        )
+        assert result.exit_code == 0
+
+        assert "exported: 18" in result.output
+
+        assert pathlib.Path(CLI_EXPORT_BY_DATE[0]).is_file()
+
+        # --update
+        result = runner.invoke(
+            export,
+            [os.path.join(cwd, PHOTOS_DB_TOUCH), ".", "--export-by-date", "--update"],
+        )
+        assert result.exit_code == 0
+
+        assert "skipped: 18" in result.output
+
+        # --update --exiftool --dry-run
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--exiftool",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0
+
+        assert "updated: 18" in result.output
+        assert "updated EXIF data: 18" in result.output
+
+        # --update --exiftool
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--exiftool",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "updated: 18" in result.output
+        assert "updated EXIF data: 18" in result.output
+
+        # --update --touch-file --exiftool --dry-run
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--exiftool",
+                "--touch-file",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "skipped: 18" in result.output
+        assert "touched date: 18" in result.output
+
+        # --update --touch-file --exiftool
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--exiftool",
+                "--touch-file",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "skipped: 18" in result.output
+        assert "touched date: 18" in result.output
+
+        for fname, mtime in zip(CLI_EXPORT_BY_DATE, CLI_EXPORT_BY_DATE_TOUCH_TIMES):
+            st = os.stat(fname)
+            assert int(st.st_mtime) == int(mtime)
+
+        # touch one file and run update again
+        ts = time.time()
+        os.utime(CLI_EXPORT_BY_DATE[0], (ts, ts))
+
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--exiftool",
+                "--touch-file",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "updated: 1" in result.output
+        assert "skipped: 17" in result.output
+        assert "updated EXIF data: 1" in result.output
+        assert "touched date: 1" in result.output
+
+        for fname, mtime in zip(CLI_EXPORT_BY_DATE, CLI_EXPORT_BY_DATE_TOUCH_TIMES):
+            st = os.stat(fname)
+            assert int(st.st_mtime) == int(mtime)
+
+        # run --update --exiftool --touch-file again
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--update",
+                "--exiftool",
+                "--touch-file",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "exported: 0" in result.output
+        assert "skipped: 18" in result.output
+
+        # run update without --touch-file
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_TOUCH),
+                ".",
+                "--export-by-date",
+                "--exiftool",
+                "--update",
+            ],
+        )
+        assert result.exit_code == 0
+
+        assert "exported: 0" in result.output
+        assert "skipped: 18" in result.output
+
+
+def test_export_ignore_signature():
+    """ test export with --ignore-signature """
+    import os
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        # first, export some files
+        result = runner.invoke(export, [os.path.join(cwd, PHOTOS_DB_15_7), ".", "-V"])
+        assert result.exit_code == 0
+
+        # modify a couple of files
+        for filename in CLI_EXPORT_IGNORE_SIGNATURE_FILENAMES:
+            modify_file(f"./{filename}")
+
+        # export with --update and --ignore-signature
+        # which should ignore the two modified files
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_7),
+                ".",
+                "-V",
+                "--update",
+                "--ignore-signature",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "exported: 0, updated: 0" in result.output
+
+        # export with --update and not --ignore-signature
+        # which should updated the two modified files
+        result = runner.invoke(
+            export, [os.path.join(cwd, PHOTOS_DB_15_7), ".", "-V", "--update"]
+        )
+        assert result.exit_code == 0
+        assert "updated: 2" in result.output
+
+        # run --update again, should be 0 files exported
+        result = runner.invoke(
+            export, [os.path.join(cwd, PHOTOS_DB_15_7), ".", "-V", "--update"]
+        )
+        assert result.exit_code == 0
+        assert "exported: 0, updated: 0" in result.output
+
+
+def test_export_ignore_signature_sidecar():
+    """ test export with --ignore-signature and --sidecar """
+    """
+    Test the following use cases: 
+    If the metadata (in Photos) that went into the sidecar did not change, the sidecar will not be updated
+    If the metadata (in Photos) that went into the sidecar did change, a new sidecar is written but a new image file is not
+    If a sidecar does not exist for the photo, a sidecar will be written whether or not the photo file was written
+    """
+
+    import osxphotos
+    import os
+
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        # first, export some files
+        result = runner.invoke(
+            export, [os.path.join(cwd, PHOTOS_DB_15_7), ".", "-V", "--sidecar", "XMP"]
+        )
+        assert result.exit_code == 0
+
+        # export with --update and --ignore-signature
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_7),
+                ".",
+                "-V",
+                "--update",
+                "--sidecar",
+                "XMP",
+                "--ignore-signature",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "exported: 0, updated: 0" in result.output
+        assert "Writing XMP sidecar" not in result.output
+
+        # modify a couple of files
+        for filename in CLI_EXPORT_IGNORE_SIGNATURE_FILENAMES:
+            modify_file(f"./{filename}")
+
+        # export with --update and --ignore-signature
+        # which should ignore the two modified files
+        # sidecar files should not be re-written
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_7),
+                ".",
+                "-V",
+                "--update",
+                "--sidecar",
+                "XMP",
+                "--ignore-signature",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "exported: 0" in result.output
+        assert "Writing XMP sidecar" not in result.output
+
+        # change the sidecar data in export DB
+        # should result in a new sidecar being exported but not the image itself
+        exportdb = osxphotos.export_db.ExportDB("./.osxphotos_export.db")
+        for filename in CLI_EXPORT_IGNORE_SIGNATURE_FILENAMES:
+            exportdb.set_sidecar_for_file(f"{filename}.xmp", "FOO", (0, 1, 2))
+
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_7),
+                ".",
+                "-V",
+                "--update",
+                "--ignore-signature",
+                "--sidecar",
+                "XMP",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "exported: 0, updated: 0" in result.output
+        assert result.output.count("Writing XMP sidecar") == len(
+            CLI_EXPORT_IGNORE_SIGNATURE_FILENAMES
+        )
+
+        # run --update again, should be 0 files exported
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_7),
+                ".",
+                "-V",
+                "--update",
+                "--ignore-signature",
+                "--sidecar",
+                "XMP",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "exported: 0, updated: 0" in result.output
+        assert "Writing XMP sidecar" not in result.output
+
+        # remove XMP files and run again to verify the files get written
+        for filename in CLI_EXPORT_IGNORE_SIGNATURE_FILENAMES:
+            os.unlink(f"./{filename}.xmp")
+
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_7),
+                ".",
+                "-V",
+                "--update",
+                "--ignore-signature",
+                "--sidecar",
+                "XMP",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "exported: 0, updated: 0" in result.output
+        assert result.output.count("Writing XMP sidecar") == len(
+            CLI_EXPORT_IGNORE_SIGNATURE_FILENAMES
+        )
 
 
 def test_labels():
@@ -2438,8 +4011,26 @@ def test_keywords():
     assert json_got == KEYWORDS_JSON
 
 
-def test_albums():
-    """Test osxphotos albums """
+# TODO: this fails with result.exit_code == 1 but I think this has to
+# do with how pytest is invoking the command
+# def test_albums_str():
+#     """Test osxphotos albums string output """
+#     import json
+#     import osxphotos
+#     import os
+#     import os.path
+#     from osxphotos.__main__ import albums
+
+#     runner = CliRunner()
+#     cwd = os.getcwd()
+#     result = runner.invoke(albums, ["--db", os.path.join(cwd, PHOTOS_DB_15_6), ])
+#     assert result.exit_code == 0
+
+#     assert result.output == ALBUMS_STR
+
+
+def test_albums_json():
+    """Test osxphotos albums json output """
     import json
     import osxphotos
     import os
@@ -2449,7 +4040,7 @@ def test_albums():
     runner = CliRunner()
     cwd = os.getcwd()
     result = runner.invoke(
-        albums, ["--db", os.path.join(cwd, PHOTOS_DB_15_5), "--json"]
+        albums, ["--db", os.path.join(cwd, PHOTOS_DB_15_6), "--json"]
     )
     assert result.exit_code == 0
 
@@ -2458,7 +4049,7 @@ def test_albums():
 
 
 def test_persons():
-    """Test osxphotos albums """
+    """Test osxphotos persons """
     import json
     import osxphotos
     import os
@@ -2474,3 +4065,263 @@ def test_persons():
 
     json_got = json.loads(result.output)
     assert json_got == PERSONS_JSON
+
+
+def test_export_report():
+    """ test export with --report option """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [os.path.join(cwd, CLI_PHOTOS_DB), ".", "-V", "--report", "report.csv"],
+        )
+        assert result.exit_code == 0
+        assert "Writing export report" in result.output
+        assert os.path.exists("report.csv")
+
+
+def test_export_report_not_a_file():
+    """ test export with --report option and bad report value """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export, [os.path.join(cwd, CLI_PHOTOS_DB), ".", "-V", "--report", "."]
+        )
+        assert result.exit_code != 0
+        assert "Aborted!" in result.output
+
+
+def test_export_as_hardlink_download_missing():
+    """ test export with incompatible export options """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "-V",
+                "--download-missing",
+                "--export-as-hardlink",
+                ".",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Aborted!" in result.output
+
+
+def test_export_missing():
+    """ test export with --missing """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, PHOTOS_DB_15_7),
+                ".",
+                "-V",
+                "--missing",
+                "--download-missing",
+                ".",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Exporting 2 photos" in result.output
+
+
+def test_export_missing_not_download_missing():
+    """ test export with incompatible export options """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            export, [os.path.join(cwd, CLI_PHOTOS_DB), ".", "-V", "--missing", "."]
+        )
+        assert result.exit_code != 0
+        assert "Aborted!" in result.output
+
+
+def test_export_cleanup():
+    """ test export with --cleanup flag """
+    import pathlib
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        result = runner.invoke(export, [os.path.join(cwd, CLI_PHOTOS_DB), ".", "-V"])
+        assert result.exit_code == 0
+
+        # create 2 files and a directory
+        with open("delete_me.txt", "w") as fd:
+            fd.write("delete me!")
+        os.mkdir("./foo")
+        with open("foo/delete_me_too.txt", "w") as fd:
+            fd.write("delete me too!")
+
+        assert pathlib.Path("./delete_me.txt").is_file()
+        # run cleanup with dry-run
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "-V",
+                "--update",
+                "--cleanup",
+                "--dry-run",
+            ],
+        )
+        assert "Deleted: 2 files, 0 directories" in result.output
+        assert pathlib.Path("./delete_me.txt").is_file()
+        assert pathlib.Path("./foo/delete_me_too.txt").is_file()
+
+        # run cleanup without dry-run
+        result = runner.invoke(
+            export,
+            [os.path.join(cwd, CLI_PHOTOS_DB), ".", "-V", "--update", "--cleanup"],
+        )
+        assert "Deleted: 2 files, 1 directory" in result.output
+        assert not pathlib.Path("./delete_me.txt").is_file()
+        assert not pathlib.Path("./foo/delete_me_too.txt").is_file()
+
+
+def test_save_load_config():
+    """ test --save-config, --load-config """
+    import glob
+    import os
+    import os.path
+    import osxphotos
+    from osxphotos.__main__ import export
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    # pylint: disable=not-context-manager
+    with runner.isolated_filesystem():
+        # test save config file
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "-V",
+                "--sidecar",
+                "XMP",
+                "--touch-file",
+                "--update",
+                "--save-config",
+                "config.toml",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Saving options to file" in result.output
+        files = glob.glob("*")
+        assert "config.toml" in files
+
+        # test load config file
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "-V",
+                "--load-config",
+                "config.toml",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Loaded options from file" in result.output
+        assert "Skipped up to date XMP sidecar" in result.output
+
+        # test overwrite existing config file
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "-V",
+                "--sidecar",
+                "XMP",
+                "--touch-file",
+                "--not-live",
+                "--update",
+                "--save-config",
+                "config.toml",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Saving options to file" in result.output
+        files = glob.glob("*")
+        assert "config.toml" in files
+
+        # test load config file with incompat command line option
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "-V",
+                "--load-config",
+                "config.toml",
+                "--live",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Incompatible export options" in result.output
+
+        # test load config file with command line override
+        result = runner.invoke(
+            export,
+            [
+                os.path.join(cwd, CLI_PHOTOS_DB),
+                ".",
+                "-V",
+                "--load-config",
+                "config.toml",
+                "--sidecar",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Writing exiftool JSON sidecar" in result.output
+        assert "Writing XMP sidecar" not in result.output

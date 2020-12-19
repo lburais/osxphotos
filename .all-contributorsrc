@@ -1,0 +1,124 @@
+{
+  "projectName": "osxphotos",
+  "projectOwner": "RhetTbull",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": true,
+  "commitConvention": "none",
+  "contributors": [
+    {
+      "login": "britiscurious",
+      "name": "britiscurious",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/25646439?v=4",
+      "profile": "https://github.com/britiscurious",
+      "contributions": [
+        "doc",
+        "code"
+      ]
+    },
+    {
+      "login": "mwort",
+      "name": "Michel Wortmann",
+      "avatar_url": "https://avatars3.githubusercontent.com/u/8170417?v=4",
+      "profile": "https://github.com/mwort",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "PabloKohan",
+      "name": "Pablo 'merKur' Kohan",
+      "avatar_url": "https://avatars3.githubusercontent.com/u/8790976?v=4",
+      "profile": "https://github.com/PabloKohan",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "hshore29",
+      "name": "hshore29",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/7023497?v=4",
+      "profile": "https://github.com/hshore29",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "dmd",
+      "name": "Daniel M. Drucker",
+      "avatar_url": "https://avatars0.githubusercontent.com/u/41439?v=4",
+      "profile": "http://3e.org/",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "jystervinou",
+      "name": "Jean-Yves Stervinou",
+      "avatar_url": "https://avatars3.githubusercontent.com/u/132356?v=4",
+      "profile": "https://github.com/jystervinou",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "dethi",
+      "name": "Thibault Deutsch",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/1011520?v=4",
+      "profile": "https://dethi.me/",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "grundsch",
+      "name": "grundsch",
+      "avatar_url": "https://avatars0.githubusercontent.com/u/3874928?v=4",
+      "profile": "https://github.com/grundsch",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "agprimatic",
+      "name": "Ag Primatic",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/4685054?v=4",
+      "profile": "https://github.com/agprimatic",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "hhoeck",
+      "name": "Horst Höck",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/6313998?v=4",
+      "profile": "https://github.com/hhoeck",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "jstrine",
+      "name": "Jonathan Strine",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/33943447?v=4",
+      "profile": "https://github.com/jstrine",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "finestream",
+      "name": "finestream",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/16638513?v=4",
+      "profile": "https://github.com/finestream",
+      "contributions": [
+        "doc"
+      ]
+    }
+  ],
+  "contributorsPerLine": 7
+}
